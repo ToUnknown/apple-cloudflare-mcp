@@ -63,7 +63,7 @@ export async function authorize(
       headers.set("Cache-Control", "no-store");
       headers.set(
         "Content-Security-Policy",
-        "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        `default-src 'none'; form-action 'self' ${new URL(auth.redirectUri).origin}; frame-ancestors 'none'; base-uri 'none'`,
       );
       headers.set("Referrer-Policy", "same-origin");
       return new Response(

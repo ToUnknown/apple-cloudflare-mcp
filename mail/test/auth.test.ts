@@ -145,6 +145,7 @@ test(
       const page = await fetch(`${base}/authorize?${params}`);
       assert.equal(page.status, 200);
       assert.equal(page.headers.get("Referrer-Policy"), "same-origin");
+      assert.ok(page.headers.get("Content-Security-Policy")?.includes("form-action 'self' https://chatgpt.com;"));
       const html = await page.text();
       assert.doesNotMatch(html, /<script>/);
       assert.match(html, /&lt;script&gt;/);

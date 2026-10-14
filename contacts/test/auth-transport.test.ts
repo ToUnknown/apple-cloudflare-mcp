@@ -51,6 +51,7 @@ async function login(clientId: string) {
   const response = await dispatch(url);
   expect(response.status).toBe(200);
   expect(response.headers.get("Referrer-Policy")).toBe("same-origin");
+  expect(response.headers.get("Content-Security-Policy")).toContain("form-action 'self' https://client.example.invalid;");
   const html = await response.text();
   const handle = html.match(/name="handle" value="([^"]+)"/)?.[1];
   expect(handle).toBeTruthy();

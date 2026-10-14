@@ -57,7 +57,7 @@ export async function authorize(
       headers.set("Referrer-Policy", "same-origin");
       headers.set(
         "Content-Security-Policy",
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${new URL(auth.redirectUri).origin}; frame-ancestors 'none'; base-uri 'none'`,
       );
       const client = escapeHtml(description.clientName);
       return new Response(
@@ -84,6 +84,7 @@ export async function authorize(
     const handle = form.get("handle") ?? "";
     if (form.get("decision") === "deny") {
       const denied = await oauth.denyConsent(request, handle);
+      denied.headers.set("Location", denied.redirectTo);
       return new Response(null, { status: 302, headers: denied.headers });
     }
     if (form.get("decision") !== "allow")
