@@ -20,7 +20,7 @@ export function passwordMatches(value: string, expected: string): boolean {
 }
 export function originAllowed(request: Request, canonical: string): boolean {
   const origin = request.headers.get("Origin");
-  return !origin || origin === canonical;
+  return !origin || origin === canonical || origin === "https://chatgpt.com";
 }
 function error(message: string, status = 400) {
   return new Response(message, {

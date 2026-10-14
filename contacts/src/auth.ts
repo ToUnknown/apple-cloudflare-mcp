@@ -32,7 +32,7 @@ export async function passwordMatches(
 }
 export function allowedOrigin(request: Request, origin: string): boolean {
   const supplied = request.headers.get("Origin");
-  return !supplied || supplied === origin;
+  return !supplied || supplied === origin || supplied === "https://chatgpt.com";
 }
 export async function authorize(
   request: Request,

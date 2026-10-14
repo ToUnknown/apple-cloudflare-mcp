@@ -98,6 +98,12 @@ describe("real Worker OAuth and MCP transport (synthetic local KV)", () => {
     );
     expect(await metadata.json()).toMatchObject({ resource: origin + "/mcp" });
   });
+  it("allows ChatGPT through to authentication but rejects lookalike and null origins", async () => {
+    expect((await post("/mcp", {}, { Origin: "https://chatgpt.com" })).status).toBe(401);
+    for (const value of ["https://chatgpt.com.attacker.invalid", "null"]) {
+      expect((await post("/mcp", {}, { Origin: value })).status).toBe(403);
+    }
+  });
   it("rejects malicious origin and missing PKCE", async () => {
     expect(
       (await post("/mcp", {}, { Origin: "https://evil.invalid" })).status,

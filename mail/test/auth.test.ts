@@ -96,6 +96,14 @@ test(
         ).status,
         403,
       );
+      for (const origin of ["https://chatgpt.com", "https://chatgpt.com.attacker.invalid", "null"]) {
+        const response = await fetch(`${base}/mcp`, {
+          method: "POST",
+          headers: { Origin: origin, "Content-Type": "application/json" },
+          body: "{}",
+        });
+        assert.equal(response.status, origin === "https://chatgpt.com" ? 401 : 403);
+      }
       const metadata = (await (
         await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)
       ).json()) as { resource: string; authorization_servers: string[] };
