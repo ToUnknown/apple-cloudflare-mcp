@@ -31,20 +31,20 @@ An agent deploying this folder should install dependencies, ask the owner to ent
 
 ## Tools
 
-| Tool                                 | Purpose                                                                    |
-| ------------------------------------ | -------------------------------------------------------------------------- |
-| `mail_identities`                    | Allowed sender addresses and preferred default                             |
-| `mail_folders`, `mail_folder_status` | Folders, special-use roles, counts, UIDVALIDITY, advertised quota          |
-| `mail_folder_manage`                 | Create/rename/delete folders and subscribe/unsubscribe                     |
+| Tool                                 | Purpose                                                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `mail_identities`                    | Allowed sender addresses and preferred default                                                                                 |
+| `mail_folders`, `mail_folder_status` | Folders, special-use roles, counts, UIDVALIDITY, advertised quota                                                              |
+| `mail_folder_manage`                 | Create/rename/delete folders and subscribe/unsubscribe                                                                         |
 | `mail_search`                        | Compact subject/from/date/flags and stable refs; bounded newest-first pagination. `detail: "full"` includes envelope metadata. |
-| `mail_read`, `mail_attachment`       | MIME bodies and attachment metadata/download                               |
-| `mail_export_eml`, `mail_import_eml` | Original EML export/append (import never sends)                            |
-| `mail_draft_save`                    | Create or replace a Draft; saves Bcc and appends before removing old draft |
-| `mail_send`, `mail_send_draft`       | SMTP send, replies and attachments; draft send retains original draft      |
-| `mail_send_receipt`                  | Retrieve a durable operation receipt without resending                     |
-| `mail_mark`                          | Add/remove standard flags or bounded custom keywords                       |
-| `mail_move`                          | Move/copy to a folder, Archive, Trash or Junk                              |
-| `mail_delete`                        | Confirmed permanent deletion of exactly one UID                            |
+| `mail_read`, `mail_attachment`       | MIME bodies and attachment metadata/download                                                                                   |
+| `mail_export_eml`, `mail_import_eml` | Original EML export/append (import never sends)                                                                                |
+| `mail_draft_save`                    | Create or replace a Draft; saves Bcc and appends before removing old draft                                                     |
+| `mail_send`, `mail_send_draft`       | SMTP send, replies and attachments; draft send retains original draft                                                          |
+| `mail_send_receipt`                  | Retrieve a durable operation receipt without resending                                                                         |
+| `mail_mark`                          | Add/remove standard flags or bounded custom keywords                                                                           |
+| `mail_move`                          | Move/copy to a folder, Archive, Trash or Junk                                                                                  |
+| `mail_delete`                        | Confirmed permanent deletion of exactly one UID                                                                                |
 
 Use `mail_identities` to see sender choices, then optionally set `message.from` on `mail_send` or `mail_draft_save`. New messages use the preferred identity. Replies with `replyToMessage` default to the first allowed receiving address in the original To, then Cc; if neither matches, they use the preferred identity. Incoming From/Reply-To never choose the sending identity. An explicit allowed `from` takes precedence. `mail_send_draft` preserves the draft's allowed From address; its optional top-level `from` overrides it. A draft with an unconfigured From is refused until an allowed override is chosen. The SMTP envelope sender matches the selected From. There is no per-tool account argument.
 
@@ -66,3 +66,7 @@ Message refs require `{mailbox, uid, uidValidity}` returned by search. Stale ref
 For local development copy `.dev.vars.example` to ignored `.dev.vars`, set dummy values, and override `PUBLIC_ORIGIN` to `http://127.0.0.1:8787` in that file before `npm run dev`. Dummy credentials cannot access mail. Real credentials would access the configured mailbox when a mail tool runs. `npm test` needs OpenSSL for ephemeral synthetic TLS certificates and uses local ports only.
 
 Current [Cloudflare node:tls support](https://developers.cloudflare.com/workers/runtime-apis/nodejs/tls/) and compatibility date `2026-10-14` are required. OAuth protected-resource metadata is at `/.well-known/oauth-protected-resource/mcp`. No unauthenticated HTTP route sends or changes mail; Durable Object handlers are reachable only through the Worker binding.
+
+### Incoming-mail events
+
+Optional MCP 2.0 webhooks can notify ChatGPT Work/dots of new matching inbox mail. Disabled by default; owner approval is required for background reads. See [setup and verification](EVENTS.md).

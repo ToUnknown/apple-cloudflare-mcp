@@ -6,10 +6,18 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "kv_namespaces": [{ "binding": "OAUTH_KV" }],
   "durable_objects": {
-    "bindings": [{ "name": "SEND_RECEIPTS", "class_name": "SendReceipt" }],
+    "bindings": [
+      { "name": "SEND_RECEIPTS", "class_name": "SendReceipt" },
+      { "name": "MAIL_EVENTS", "class_name": "MailEvents" },
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SendReceipt"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SendReceipt"] },
+    { "tag": "v2-mail-events", "new_sqlite_classes": ["MailEvents"] },
+  ],
   "vars": {
+    "MAIL_EVENTS_ENABLED": "false",
+    "EVENT_CALLBACK_ORIGINS": "",
     "PUBLIC_ORIGIN": "https://icloud-mail-mcp.YOUR_SUBDOMAIN.workers.dev",
   },
   "observability": { "enabled": false },

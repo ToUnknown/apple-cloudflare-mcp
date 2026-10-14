@@ -1,11 +1,15 @@
-import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import {
+  OAuthProvider,
+  type OAuthProviderOptions,
+} from "@cloudflare/workers-oauth-provider";
+import { handleMailMcp } from "./event-route";
 import { authorize, originAllowed } from "./auth";
-import { createServer } from "./tools";
+
 import type { AppEnv } from "./types";
 export { SendReceipt } from "./durable";
-export function provider(env: AppEnv): OAuthProvider<AppEnv> {
-  return new OAuthProvider<AppEnv>({
+export { MailEvents } from "./event-durable";
+export function providerOptions(env: AppEnv): OAuthProviderOptions<AppEnv> {
+  return {
     apiRoute: "/mcp",
     authorizeEndpoint: "/authorize",
     tokenEndpoint: "/token",
@@ -27,21 +31,37 @@ export function provider(env: AppEnv): OAuthProvider<AppEnv> {
         if (!originAllowed(request, bindings.PUBLIC_ORIGIN))
           return new Response("Forbidden origin", { status: 403 });
         const props = ctx.props as
-          | { userId?: string; scope?: string[] }
-          | undefined;
+          { userId?: string; scope?: string[] } | undefined;
         if (props?.userId !== "owner" || !props.scope?.includes("mail"))
           return new Response("Forbidden", { status: 403 });
-        const server = createServer(bindings);
-        const transport = new WebStandardStreamableHTTPServerTransport({
-          sessionIdGenerator: undefined,
-          enableJsonResponse: true,
-        });
-        await server.connect(transport);
-        try {
-          return await transport.handleRequest(request);
-        } finally {
-          await server.close();
+        const token = request.headers.get("Mcp-Method")?.startsWith("events/") && bindings.OAUTH_PROVIDER
+          ? await bindings.OAUTH_PROVIDER.unwrapToken(
+              request.headers.get("Authorization")?.replace(/^Bearer /i, "") ??
+                "",
+            )
+          : null;
+        let principal;
+        if (token && bindings.OAUTH_PROVIDER) {
+          let cursor: string | undefined;
+          for (let page = 0; page < 10; page++) {
+            const grants = await bindings.OAUTH_PROVIDER.listUserGrants(
+              token.userId,
+              { limit: 100, cursor },
+            );
+            const grant = grants.items.find((g) => g.id === token.grantId);
+            if (grant) {
+              principal = {
+                userId: token.userId,
+                clientId: grant.clientId,
+                grantId: token.grantId,
+              };
+              break;
+            }
+            if (!grants.cursor) break;
+            cursor = grants.cursor;
+          }
         }
+        return handleMailMcp(request, bindings, principal);
       },
     },
     defaultHandler: {
@@ -59,7 +79,10 @@ export function provider(env: AppEnv): OAuthProvider<AppEnv> {
         );
       },
     },
-  });
+  };
+}
+export function provider(env: AppEnv) {
+  return new OAuthProvider<AppEnv>(providerOptions(env));
 }
 export default {
   async fetch(

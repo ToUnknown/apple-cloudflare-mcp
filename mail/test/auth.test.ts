@@ -41,6 +41,10 @@ test(
         "ICLOUD_USERNAME:owner@example.invalid",
         "--var",
         "ICLOUD_APP_PASSWORD:synthetic-only",
+        "--var",
+        "MAIL_EVENTS_ENABLED:true",
+        "--var",
+        "EVENT_CALLBACK_ORIGINS:https://receiver.example",
       ],
       {
         cwd: process.cwd(),
@@ -96,13 +100,20 @@ test(
         ).status,
         403,
       );
-      for (const origin of ["https://chatgpt.com", "https://chatgpt.com.attacker.invalid", "null"]) {
+      for (const origin of [
+        "https://chatgpt.com",
+        "https://chatgpt.com.attacker.invalid",
+        "null",
+      ]) {
         const response = await fetch(`${base}/mcp`, {
           method: "POST",
           headers: { Origin: origin, "Content-Type": "application/json" },
           body: "{}",
         });
-        assert.equal(response.status, origin === "https://chatgpt.com" ? 401 : 403);
+        assert.equal(
+          response.status,
+          origin === "https://chatgpt.com" ? 401 : 403,
+        );
       }
       const metadata = (await (
         await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)
@@ -145,7 +156,11 @@ test(
       const page = await fetch(`${base}/authorize?${params}`);
       assert.equal(page.status, 200);
       assert.equal(page.headers.get("Referrer-Policy"), "same-origin");
-      assert.ok(page.headers.get("Content-Security-Policy")?.includes("form-action 'self' https://chatgpt.com;"));
+      assert.ok(
+        page.headers
+          .get("Content-Security-Policy")
+          ?.includes("form-action 'self' https://chatgpt.com;"),
+      );
       const html = await page.text();
       assert.doesNotMatch(html, /<script>/);
       assert.match(html, /&lt;script&gt;/);
@@ -234,11 +249,75 @@ test(
           method: "POST",
           headers: {
             Authorization: `Bearer ${token.access_token}`,
+            ...(params && typeof params === "object" && "_meta" in params
+              ? {
+                  "MCP-Protocol-Version": "2026-07-28",
+                  "Mcp-Method": method,
+                  ...("name" in params
+                    ? { "Mcp-Name": String(params.name) }
+                    : {}),
+                }
+              : {}),
             "Content-Type": "application/json",
             Accept: "application/json, text/event-stream",
           },
           body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
         });
+      const meta = {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+          name: "synthetic",
+          version: "1",
+        },
+        "io.modelcontextprotocol/clientCapabilities": {},
+      };
+      const discovery = (await (
+        await rpc("server/discover", { _meta: meta })
+      ).json()) as {
+        result: {
+          supportedVersions: string[];
+          capabilities: { events: unknown };
+        };
+      };
+      assert.ok(discovery.result, JSON.stringify(discovery));
+      assert.ok(discovery.result.supportedVersions.includes("2026-07-28"));
+      assert.deepEqual(discovery.result.capabilities.events, {});
+      const catalog = (await (
+        await rpc("events/list", { _meta: meta })
+      ).json()) as { result: { events: { name: string }[] } };
+      assert.equal(catalog.result.events[0].name, "mail.message.received");
+      const eventArgs = {
+        _meta: meta,
+        name: "mail.message.received",
+        arguments: { mailbox: "INBOX" },
+        delivery: { mode: "webhook", url: "https://receiver.example/callback" },
+      };
+      const invalidSubscription = (await (
+        await rpc("events/subscribe", {
+          ...eventArgs,
+          delivery: { ...eventArgs.delivery, secret: "invalid" },
+        })
+      ).json()) as { error: { code: number } };
+      assert.equal(invalidSubscription.error.code, -32602);
+      const stopped = (await (
+        await rpc("events/unsubscribe", eventArgs)
+      ).json()) as { result: { resultType: string } };
+      assert.equal(stopped.result.resultType, "complete");
+      const modernTools = (await (
+        await rpc("tools/list", { _meta: meta })
+      ).json()) as { result: { resultType: string; tools: unknown[] } };
+      assert.equal(modernTools.result.resultType, "complete");
+      assert.equal(modernTools.result.tools.length, 16);
+      const modernCall = (await (
+        await rpc("tools/call", {
+          _meta: meta,
+          name: "mail_identities",
+          arguments: {},
+        })
+      ).json()) as { result: { resultType: string; isError?: boolean } };
+      assert.ok(modernCall.result, JSON.stringify(modernCall));
+      assert.equal(modernCall.result.resultType, "complete");
+      assert.notEqual(modernCall.result.isError, true);
       const initialize = await rpc("initialize", {
         protocolVersion: "2025-11-25",
         capabilities: {},

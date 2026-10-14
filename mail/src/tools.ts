@@ -1,5 +1,5 @@
 import { actionableError } from "./errors";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import PostalMime from "postal-mime";
 import { z } from "zod";
 import {
@@ -77,7 +77,7 @@ export function createServer(env: AppEnv): McpServer {
     annotations: typeof read | typeof write,
     action: (input: z.infer<z.ZodObject<S>>) => Promise<unknown>,
   ) {
-    const inputSchema: z.ZodRawShape = schema;
+    const inputSchema = z.object(schema);
     server.registerTool(
       name,
       {
@@ -313,12 +313,10 @@ export function createServer(env: AppEnv): McpServer {
                     }
                   : {
                       subject: (m.envelope?.subject ?? "").slice(0, 500),
-                      from: (m.envelope?.from ?? [])
-                        .slice(0, 5)
-                        .map((a) => ({
-                          name: a.name?.slice(0, 200),
-                          address: a.address,
-                        })),
+                      from: (m.envelope?.from ?? []).slice(0, 5).map((a) => ({
+                        name: a.name?.slice(0, 200),
+                        address: a.address,
+                      })),
                       date: m.envelope?.date || m.internalDate || null,
                     }),
                 flags: [...(m.flags ?? [])],
