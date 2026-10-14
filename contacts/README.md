@@ -43,9 +43,16 @@ For local development, copy `.dev.vars.example` to `.dev.vars`, replace values p
 | `save_contact`, `delete_contact` | Create, patch or permanently delete a contact. |
 | `list_groups`, `save_group`, `delete_group` | List, create, rename or delete Apple lists/groups. |
 | `read_group_members`, `change_group_members` | Resolve group members or add/remove contact UID references. |
+| `creation_receipt` | Inspect a contact creation by operationId without repeating it. |
 | `import_vcards`, `export_vcards` | Import contacts as new records; export original vCards. |
 
 Read before updating or deleting and pass the returned ETag. A concurrent change returns `CONFLICT`; read again and reconsider the change. New records use `If-None-Match: *`. A save can return `etag: null` when Apple omits the response ETag; read the saved ID for its current ETag. Do not automatically retry an uncertain/timed-out write; it may already have succeeded.
+
+For simple creation, call `save_contact` with a fresh UUID `operationId` and `contact: {name, givenName?, familyName?, emails?, phones?, company?, note?, birthday?}`. Values are ordinary text; escaping is handled internally. Existing contacts use `id` and `etag` with the same simple fields; omitted fields are preserved, and empty emails/phones arrays clear those fields. Do not mix `contact` with advanced `formattedName/properties/clear`.
+
+Reuse exactly the same operationId and input on creation retries. `CREATION_RECEIPTS` Durable Objects retain the outcome and prevent duplicate creation, even after deletion. Pending/uncertain writes never run again under that ID; check `creation_receipt` and search before considering a new creation. Receipts store fingerprints and IDs, not contact contents. Keep receipt storage to retain this protection. Group creation/import retain their existing contracts.
+
+Contact/group searches default to compact name/email/phone results; use `detail: "full"` or `read_contact` for original vCards and photos. Failures return `error: {code, message, retryable, nextAction}`; contact search publishes an output schema and structured results.
 
 `save_contact` accepts a simple `formattedName` plus `properties` (`name`, `value`, optional `parameters`) and `clear` (exact names). Values use vCard syntax: backslash-escape text commas, semicolons, backslashes and newlines; structured properties preserve their separating semicolons. For example:
 

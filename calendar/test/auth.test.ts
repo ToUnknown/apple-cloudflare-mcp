@@ -261,7 +261,7 @@ test("PKCE owner approval exchanges a code and reaches real stateless MCP initia
     result: { tools: { name: string }[] };
   };
   expect(tools.result.tools.some((t) => t.name === "events_update")).toBe(true);
-  expect(tools.result.tools).toHaveLength(13);
+  expect(tools.result.tools).toHaveLength(14);
   const replay = await worker.fetch(
     request("/authorize", {
       method: "POST",

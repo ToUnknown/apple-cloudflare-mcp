@@ -60,7 +60,12 @@ class SyntheticDAV extends CardDAV {
 }
 async function session() {
   const dav = new SyntheticDAV();
-  const server = createServer(dav);
+  const receipts = new Map<string, import("../src/creation").CreationRecord>();
+  const server = createServer(dav, id => ({
+    async reserve(r) { const old = receipts.get(id); if(old) return old; receipts.set(id,r); return null; },
+    async complete(r) { receipts.set(id,r); },
+    async receipt() { return receipts.get(id) ?? null; },
+  }));
   const client = new Client({ name: "synthetic", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(a);
@@ -79,6 +84,7 @@ describe("Contacts tools through real MCP SDK", () => {
         await client.callTool({
           name: "save_contact",
           arguments: {
+            operationId: crypto.randomUUID(),
             formattedName: "Alice",
             properties: [
               {
@@ -140,7 +146,7 @@ describe("Contacts tools through real MCP SDK", () => {
       const c = payload(
         await client.callTool({
           name: "save_contact",
-          arguments: { formattedName: "Bob" },
+          arguments: { operationId: crypto.randomUUID(), formattedName: "Bob" },
         }),
       );
       const g = payload(

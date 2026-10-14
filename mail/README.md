@@ -36,7 +36,7 @@ An agent deploying this folder should install dependencies, ask the owner to ent
 | `mail_identities`                    | Allowed sender addresses and preferred default                             |
 | `mail_folders`, `mail_folder_status` | Folders, special-use roles, counts, UIDVALIDITY, advertised quota          |
 | `mail_folder_manage`                 | Create/rename/delete folders and subscribe/unsubscribe                     |
-| `mail_search`                        | Search text/address/subject/date/flags; bounded, newest-first pagination   |
+| `mail_search`                        | Compact subject/from/date/flags and stable refs; bounded newest-first pagination. `detail: "full"` includes envelope metadata. |
 | `mail_read`, `mail_attachment`       | MIME bodies and attachment metadata/download                               |
 | `mail_export_eml`, `mail_import_eml` | Original EML export/append (import never sends)                            |
 | `mail_draft_save`                    | Create or replace a Draft; saves Bcc and appends before removing old draft |
@@ -47,6 +47,8 @@ An agent deploying this folder should install dependencies, ask the owner to ent
 | `mail_delete`                        | Confirmed permanent deletion of exactly one UID                            |
 
 Use `mail_identities` to see sender choices, then optionally set `message.from` on `mail_send` or `mail_draft_save`. New messages use the preferred identity. Replies with `replyToMessage` default to the first allowed receiving address in the original To, then Cc; if neither matches, they use the preferred identity. Incoming From/Reply-To never choose the sending identity. An explicit allowed `from` takes precedence. `mail_send_draft` preserves the draft's allowed From address; its optional top-level `from` overrides it. A draft with an unconfigured From is refused until an allowed override is chosen. The SMTP envelope sender matches the selected From. There is no per-tool account argument.
+
+Search output is compact by default; full message bodies remain in `mail_read`. Search has an explicit output schema. Tool results include structured content, and failures return `error: {code, message, retryable, nextAction}`. Reusing a send operationId with different content returns `OPERATION_CONFLICT` with `isError: true`.
 
 Message refs require `{mailbox, uid, uidValidity}` returned by search. Stale refs fail closed. Permanent message deletion requires UIDPLUS/IMAP4rev2 targeted UID EXPUNGE; broad EXPUNGE is refused. Special folders use server-advertised roles and fail clearly if missing. Folder deletion requires explicit `confirm=true`.
 

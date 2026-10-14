@@ -1,3 +1,4 @@
+import { actionableError } from "./errors";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import PostalMime from "postal-mime";
 import { z } from "zod";
@@ -40,6 +41,11 @@ const write = {
 const destructive = { ...write, destructiveHint: true };
 function json(value: unknown) {
   return {
+    structuredContent: JSON.parse(
+      JSON.stringify(value, (_, v) =>
+        typeof v === "bigint" ? v.toString() : v,
+      ),
+    ),
     content: [
       {
         type: "text" as const,
@@ -55,7 +61,7 @@ export function safeError(error: unknown): string {
   if (error instanceof z.ZodError)
     return "Invalid input. Check the tool schema and limits.";
   // Protocol exceptions may contain credentials, mailbox contents or raw server replies.
-  return "Mail operation failed. Check account credentials, connectivity and server limits. A write may have completed; inspect mailbox state before repeating it.";
+  return "Mail operation failed. Check connectivity and server limits. A write may have completed; inspect mailbox state before repeating it.";
 }
 export function definedSearch(query: Record<string, unknown>) {
   return Object.fromEntries(
@@ -74,14 +80,69 @@ export function createServer(env: AppEnv): McpServer {
     const inputSchema: z.ZodRawShape = schema;
     server.registerTool(
       name,
-      { description, inputSchema, annotations },
+      {
+        description,
+        inputSchema,
+        annotations,
+        ...(name === "mail_search"
+          ? {
+              outputSchema: z.object({
+                messages: z.array(
+                  z.object({
+                    ref,
+                    subject: z.string().optional(),
+                    from: z
+                      .array(
+                        z.object({
+                          name: z.string().optional(),
+                          address: z.string().optional(),
+                        }),
+                      )
+                      .optional(),
+                    date: z.string().nullable().optional(),
+                    flags: z.array(z.string()),
+                    envelope: z.unknown().optional(),
+                    bytes: z.number().optional(),
+                    internalDate: z.union([z.string(), z.boolean()]).optional(),
+                  }),
+                ),
+                nextBeforeUid: z.number().nullable(),
+                searchedUidRange: z.array(z.number()).optional(),
+                windowMatches: z.number().optional(),
+              }),
+            }
+          : {}),
+      },
       async (input) => {
         try {
-          return json(await action(z.object(schema).parse(input)));
+          const output = await action(z.object(schema).parse(input));
+          if (output && typeof output === "object" && "error" in output) {
+            const message = String(output.error);
+            return {
+              isError: true,
+              ...json({
+                error: /operationId was already used/.test(message)
+                  ? {
+                      code: "OPERATION_CONFLICT",
+                      message,
+                      retryable: false,
+                      nextAction:
+                        "Reuse the original operationId with identical input. Use a new UUID only for a different intended send.",
+                    }
+                  : actionableError(message, false),
+              }),
+            };
+          }
+          return json(output);
         } catch (error) {
           return {
             isError: true,
-            content: [{ type: "text" as const, text: safeError(error) }],
+            ...json({
+              error: actionableError(
+                safeError(error),
+                !annotations.readOnlyHint,
+              ),
+            }),
           };
         }
       },
@@ -171,10 +232,11 @@ export function createServer(env: AppEnv): McpServer {
   );
   tool(
     "mail_search",
-    "Search a bounded 10,000-UID window, newest first. beforeUid paginates older windows/results; use returned nextBeforeUid. Returns stable message refs.",
+    "Search a bounded 10,000-UID window, newest first. beforeUid paginates older windows/results; use returned nextBeforeUid. Returns compact subject/from/date/flags and stable refs. Full content/envelope via mail_read; detail=full includes search envelope metadata.",
     {
       mailbox,
       limit: z.number().int().min(1).max(50).default(20),
+      detail: z.enum(["compact", "full"]).default("compact"),
       beforeUid: z.number().int().min(1).max(4294967295).optional(),
       text: safeText.optional(),
       from: safeText.optional(),
@@ -243,10 +305,23 @@ export function createServer(env: AppEnv): McpServer {
                   uid: m.uid,
                   uidValidity: c.mailbox && c.mailbox.uidValidity.toString(),
                 },
-                envelope: m.envelope,
-                bytes: m.size,
+                ...(input.detail === "full"
+                  ? {
+                      envelope: m.envelope,
+                      bytes: m.size,
+                      internalDate: m.internalDate,
+                    }
+                  : {
+                      subject: (m.envelope?.subject ?? "").slice(0, 500),
+                      from: (m.envelope?.from ?? [])
+                        .slice(0, 5)
+                        .map((a) => ({
+                          name: a.name?.slice(0, 200),
+                          address: a.address,
+                        })),
+                      date: m.envelope?.date || m.internalDate || null,
+                    }),
                 flags: [...(m.flags ?? [])],
-                internalDate: m.internalDate,
               })),
             searchedUidRange: [lower, upper],
             windowMatches: uids.length,

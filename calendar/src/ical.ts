@@ -383,7 +383,7 @@ function defaultZonedTime(time: Time): Temporal.ZonedDateTime {
     { disambiguation: "compatible", overflow: "reject" },
   );
 }
-function availabilityTime(time: Time): number {
+export function availabilityTime(time: Time): number {
   return time.isDate || time.zone.tzid === "floating"
     ? defaultZonedTime(time).epochMilliseconds
     : time.toUnixTime() * 1000;

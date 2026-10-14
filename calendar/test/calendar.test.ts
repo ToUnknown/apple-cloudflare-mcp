@@ -782,7 +782,8 @@ test("malformed provider data fails closed instead of fabricating search results
   ).toThrow("Cannot verify title matches");
 });
 test("MCP search verifies titles even when the provider returns unfiltered resources", async () => {
-  const mock = fixture();
+  const expanded = sample.replace("RRULE:FREQ=DAILY;COUNT=3\r\n", "");
+  const mock = fixture((_, init) => init.method === "REPORT" && String(init.body).includes("<c:expand") ? new Response(xml(`<d:getetag>"v1"</d:getetag><c:calendar-data>${escape(expanded)}</c:calendar-data>`, "/u/cal/event-one.ics"), {status:207}) : undefined);
   vi.stubGlobal("fetch", mock);
   const server = calendarServer(env as CalendarEnv);
   const client = new Client({ name: "synthetic", version: "1" });

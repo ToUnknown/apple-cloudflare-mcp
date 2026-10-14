@@ -1,3 +1,11 @@
+import { simpleContact, applySimple, compactContact } from "./simple";
+import {
+  createOnce,
+  publicReceipt,
+  OperationError,
+  type CreationStore,
+} from "./creation";
+import { actionableError } from "./errors";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { CardDAV, DavError } from "./carddav";
@@ -46,42 +54,81 @@ const destructive = {
   idempotentHint: false,
   openWorldHint: true,
 };
-export function createServer(dav: CardDAV): McpServer {
+export function createServer(
+  dav: CardDAV,
+  receipts?: (operationId: string) => CreationStore,
+): McpServer {
   const server = new McpServer({ name: "icloud-contacts", version: "0.1.0" });
-  const result = (data: unknown) => ({
-    content: [{ type: "text" as const, text: JSON.stringify(data) }],
-  });
-  const run = (fn: () => Promise<unknown>) => async () => {
-    try {
-      return result(await fn());
-    } catch (e) {
-      return {
-        isError: true,
-        ...result({
-          error: e instanceof DavError ? e.code : "INVALID_CONTACT",
-          message:
-            e instanceof DavError || e instanceof Error
-              ? e.message
-              : "Contacts operation failed",
-        }),
-      };
-    }
+  const result = (data: unknown) => {
+    const structuredContent = (
+      Array.isArray(data) ? { items: data } : data
+    ) as Record<string, unknown>;
+    return {
+      structuredContent,
+      content: [
+        { type: "text" as const, text: JSON.stringify(structuredContent) },
+      ],
+    };
   };
+  const run =
+    (fn: () => Promise<unknown>, write = true) =>
+    async () => {
+      try {
+        return result(await fn());
+      } catch (e) {
+        return {
+          isError: true,
+          ...result({
+            error:
+              e instanceof OperationError
+                ? {
+                    code: e.code,
+                    message: e.message,
+                    retryable: false,
+                    nextAction: e.nextAction,
+                  }
+                : actionableError(
+                    e instanceof Error
+                      ? e.message
+                      : "Contacts operation failed",
+                    write,
+                    e instanceof DavError ? e.code : undefined,
+                  ),
+          }),
+        };
+      }
+    };
+  server.registerTool(
+    "creation_receipt",
+    {
+      description:
+        "Check a creation operation without retrying it. Receipts retain IDs, not contact content; created does not imply the record still exists.",
+      inputSchema: { operationId: z.string().uuid() },
+      annotations: read,
+    },
+    ({ operationId }) =>
+      run(
+        async () =>
+          publicReceipt((await receipts?.(operationId).receipt()) ?? null),
+        false,
+      )(),
+  );
   server.registerTool(
     "list_addressbooks",
     {
       description:
-        "List discovered iCloud CardDAV addressbooks. Use an addressbookId when more than one exists.",
+        "List discovered iCloud CardDAV addressbooks in items. Use an addressbookId when more than one exists.",
       inputSchema: {},
       annotations: read,
     },
-    () => run(() => dav.discover())(),
+    () => run(() => dav.discover(), false)(),
   );
   const page = {
     ...book,
     query: z.string().max(200).default(""),
     offset: z.number().int().min(0).max(5000).default(0),
     limit: z.number().int().min(1).max(50).default(25),
+    detail: z.enum(["compact", "full"]).default("compact"),
   };
   async function search(
     args: {
@@ -89,6 +136,7 @@ export function createServer(dav: CardDAV): McpServer {
       query: string;
       offset: number;
       limit: number;
+      detail: "compact" | "full";
     },
     groups: boolean,
   ) {
@@ -119,7 +167,7 @@ export function createServer(dav: CardDAV): McpServer {
       }
     }
     return {
-      records: found,
+      records: args.detail === "full" ? found : found.map(compactContact),
       nextOffset: scanned < inventory.length ? scanned : null,
       inventoryCount: inventory.length,
       scannedThrough: scanned,
@@ -131,11 +179,31 @@ export function createServer(dav: CardDAV): McpServer {
     "search_contacts",
     {
       description:
-        "Search all vCard properties, including emails, phones, notes and phonetics. Returns raw vCards, stable URL IDs and ETags. Page with nextOffset; inventories over 5000 fail explicitly.",
+        "Search all vCard properties, including emails, phones, notes and phonetics. Returns compact names/emails/phones, stable IDs and ETags; detail=full includes raw vCards, or use read_contact. Page with nextOffset; inventories over 5000 fail explicitly.",
       inputSchema: page,
+      outputSchema: z.object({
+        records: z.array(
+          z.object({
+            id: z.string(),
+            etag: z.string(),
+            uid: z.string(),
+            name: z.string(),
+            group: z.boolean(),
+            vcard: z.string().optional(),
+            emails: z.array(z.string()).optional(),
+            phones: z.array(z.string()).optional(),
+            company: z.string().nullable().optional(),
+            detailsTruncated: z.boolean().optional(),
+          }),
+        ),
+        nextOffset: z.number().nullable(),
+        inventoryCount: z.number(),
+        scannedThrough: z.number(),
+        pagingNote: z.string(),
+      }),
       annotations: read,
     },
-    (args) => run(() => search(args, false))(),
+    (args) => run(() => search(args, false), false)(),
   );
   server.registerTool(
     "list_groups",
@@ -145,7 +213,7 @@ export function createServer(dav: CardDAV): McpServer {
       inputSchema: page,
       annotations: read,
     },
-    (args) => run(() => search(args, true))(),
+    (args) => run(() => search(args, true), false)(),
   );
   server.registerTool(
     "read_contact",
@@ -155,15 +223,17 @@ export function createServer(dav: CardDAV): McpServer {
       inputSchema: { id },
       annotations: read,
     },
-    (args) => run(() => dav.read(args.id))(),
+    (args) => run(() => dav.read(args.id), false)(),
   );
   server.registerTool(
     "save_contact",
     {
       description:
-        "Create or edit a contact. Existing records require id and ETag from read_contact. Replaces only explicitly named properties; unknown fields remain. Property values use vCard escaping; structured N/ADR/ORG values use semicolons. Use raw vCard import for full-fidelity creation. clear removes exact property names. Grouped properties use item1.TEL, item1.X-ABLabel, etc.",
+        "Create or edit a contact using contact {name,givenName,familyName,emails,phones,company,note,birthday}, or advanced formattedName/properties/clear. Do not mix modes. Omitted fields are preserved; empty email/phone arrays clear them. Creating requires a UUID operationId reused unchanged on retries. Existing records require id and ETag from read_contact. Replaces only explicitly named properties; unknown fields remain. Property values use vCard escaping; structured N/ADR/ORG values use semicolons. Use raw vCard import for full-fidelity creation. clear removes exact property names. Grouped properties use item1.TEL, item1.X-ABLabel, etc.",
       inputSchema: {
         ...book,
+        operationId: z.string().uuid().optional(),
+        contact: simpleContact.optional(),
         id: id.optional(),
         etag: etag.optional(),
         formattedName: z.string().min(1).max(500).optional(),
@@ -174,6 +244,18 @@ export function createServer(dav: CardDAV): McpServer {
     },
     (args) =>
       run(async () => {
+        if (
+          args.contact &&
+          (args.formattedName || args.properties.length || args.clear.length)
+        )
+          throw new Error(
+            "Use contact fields or advanced properties, not both",
+          );
+        if (args.id && args.operationId)
+          throw new Error(
+            "operationId is for creation; edits use the current ETag",
+          );
+        const name = args.contact?.name ?? args.formattedName;
         let lines: string[];
         if (args.id) {
           const record = await dav.read(args.id);
@@ -185,10 +267,10 @@ export function createServer(dav: CardDAV): McpServer {
             );
           lines = parseCard(record.vcard);
         } else {
-          if (!args.formattedName)
-            throw new Error("New contact needs formattedName");
+          if (!name)
+            throw new Error("New contact needs contact.name or formattedName");
           if (args.etag) throw new Error("ETag requires an existing ID");
-          lines = newCard(args.formattedName);
+          lines = newCard(name);
         }
         lines = clearProperties(lines, args.clear);
         lines = patchCard(lines, args.properties);
@@ -196,7 +278,15 @@ export function createServer(dav: CardDAV): McpServer {
           lines = patchCard(lines, [
             { name: "FN", value: escapeText(args.formattedName) },
           ]);
-        return dav.save(args.id, lines, args.etag, args.addressbookId);
+        if (args.contact) lines = applySimple(lines, args.contact);
+        if (args.id)
+          return dav.save(args.id, lines, args.etag, args.addressbookId);
+        return createOnce(
+          args.operationId ? receipts?.(args.operationId) : undefined,
+          args.operationId,
+          args,
+          () => dav.save(undefined, lines, undefined, args.addressbookId),
+        );
       })(),
   );
   server.registerTool(
@@ -301,7 +391,7 @@ export function createServer(dav: CardDAV): McpServer {
               null,
           })),
         };
-      })(),
+      }, false)(),
   );
   server.registerTool(
     "change_group_members",
@@ -363,7 +453,7 @@ export function createServer(dav: CardDAV): McpServer {
           cards.push(record.vcard);
         }
         return { count: cards.length, vcard: cards.join("") };
-      })(),
+      }, false)(),
   );
   server.registerTool(
     "import_vcards",

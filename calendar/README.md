@@ -27,14 +27,24 @@ For local development, copy `.dev.vars.example` to the ignored `.dev.vars`, repl
 | Tools | Behavior |
 | --- | --- |
 | `calendars_list`, `calendars_create`, `calendars_rename` | Discover IDs/privileges/reports; create via extended MKCOL; rename via PROPPATCH with checked property status. iCloud may refuse management methods. |
-| `events_search`, `events_read` | Bounded date-range and optional literal, case-insensitive title substring verified locally, including Unicode/folded titles. A master or exception title can match; returns full stored ICS, ETag, series and exceptions. Search returns matching resources, **not expanded occurrences**. |
-| `events_create`, `events_update` | Create from complete ICS or patch summary/description/location/times/recurrence rule. Explicit `series` or `occurrence` scope. |
+| `events_search` | Actual occurrences in the requested range: dates/times, all-day status, repeat rules, series start and creation date when recorded. Compact output; literal case-insensitive search matches each occurrence title. Cancelled occurrences excluded. |
+| `events_read` | Complete stored ICS, ETag, master and exceptions for advanced reads and edits. |
+| `events_create`, `events_update` | Create from simple fields or complete ICS; patch summary/description/location/times/recurrence rule. Explicit `series` or `occurrence` scope. |
 | `events_import`, `events_export` | Replace one complete UID/series with ETag protection, or export exact stored ICS. Import preserves UID; creation chooses a new resource path. |
 | `events_move`, `events_delete` | Atomic MOVE between event calendars without overwrite; delete a series or exclude one occurrence. Unsupported destinations are rejected without copy/delete fallback. |
+| `creation_receipt` | Look up an event creation by operationId without repeating it. |
 | `availability` | Busy intervals for selected accessible calendars using CalDAV's server expansion. Not other people's availability. Defaults all-day/floating times to Europe/Berlin with DST; explicit timezones remain unchanged. |
 | `invitations_reply` | Submit METHOD:REPLY to an advertised scheduling outbox for the authenticated owner's advertised attendee address. Returns per-recipient server status; **does not confirm delivery**. |
 
 Discovery includes supported component types: use `supportsEvents:true` destinations. VTODO-only reminder collections cannot store events. Calendar/event IDs are the discovered absolute CalDAV URLs. ETags must be the exact strong quoted value returned by `events_read`. Writes use `If-Match`; creation uses `If-None-Match: *`. A conflict requires another read. MOVE changes the resource ID while preserving its UID. An error after a mutation may mean the server changed data but verification failed; read before retrying.
+
+For ordinary creation, use `events_create` with a fresh UUID `operationId`, `calendarId`, and `event: {title, start, end, allDay?, timezone?, description?, location?}`. Local datetime strings include seconds and default to Europe/Berlin; they are stored as UTC. Explicit UTC/offset times retain their instant. Ambiguous/nonexistent DST local times are rejected; provide an explicit offset. All-day values are dates with an exclusive end. Advanced recurrence uses `ics` instead of `event`.
+
+Reuse exactly the same operationId and input on retries. Durable receipts prevent duplicate creates even after the event is deleted. A pending/uncertain operation never creates again automatically: inspect `creation_receipt` and search first. Receipts store fingerprints, IDs and status, not event contents; retain the `CREATION_RECEIPTS` storage for replay protection. Changing input requires a new ID only for a separate intended creation.
+
+Search returns `expanded:true`, with `resources[].events` containing actual overlapping occurrences and original `recurrenceId` values for edits. `resources[].series` gives the series start, timezone, creation date (`null` if unavailable), and repeat frequency/interval/weekdays plus full rule parts. Timed occurrence start/end are UTC; localStart/localEnd also show Europe/Berlin dates, times and offsets; all-day start/end remain dates, with UTC boundaries supplied separately. End boundaries are exclusive; multi-day events retain their full duration. Results include transparent events but exclude cancelled ones. Full ICS remains available through read/export. Search is bounded to 1,000 expanded occurrences and 2 MiB of original metadata; narrow the range when limits are reached. Unsupported expansion or concurrent changes return an error, never a misleading empty result.
+
+Tool failures return `error: {code, message, retryable, nextAction}`. Searches also publish an output schema and structured results.
 
 For event creation/import provide one VERSION:2.0 VCALENDAR with one UID, one master VEVENT, optional recurrence exceptions, and optional VTIMEZONE definitions. Example:
 
@@ -59,7 +69,7 @@ All-day times use `DTSTART;VALUE=DATE` and exclusive `DTEND;VALUE=DATE`. Structu
 - This is single-owner access, not a multi-user Apple login service. Each deployer supplies their own secrets and KV. OAuth codes/tokens and consent handling are provided by Cloudflare's library; S256 PKCE, one-use browser-bound forms, constant-time password comparison, Origin/host checks and no-framing headers protect approval.
 - Requests discover `caldav.icloud.com` principal/home/shards rather than guessing account paths. Basic credentials are sent only to HTTPS `caldav.icloud.com` or `p` followed by two or three digits and `-caldav.icloud.com` shard hosts. Redirects are manual, allowlisted and capped. Responses are capped at 2 MiB, requests time out at 15 seconds, ICS writes at 1 MiB, queries at 500 resources and 366 days.
 - No calendar sharing, whole-calendar deletion, managed attachment upload/download, Apple-private extension authoring, or inbox processing tools are exposed. Existing unknown properties are preserved rather than interpreted. Apple app-specific passwords do not provide a supported JSON API for those operations.
-- Availability defaults all-day/floating events to Europe/Berlin. It still refuses unexpanded recurrence or missing definitions for explicit TZIDs. Use event search/read for those cases.
+- Availability defaults all-day/floating events to Europe/Berlin. It still refuses unexpanded recurrence or missing definitions for explicit TZIDs. Use events_read/export for raw data in those cases.
 - Writing organizer/attendee data stores calendar content; it is **not proof of sending an invitation or notification**. A scheduling outbox must be advertised for reply submission. Server acceptance and recipient status are not delivery proof. Automatic server-side scheduling on event PUT depends on iCloud/account permissions and is unverified.
 - Local tests cover protocol discovery, unsafe redirects/XML, timeouts/bounds, ETags, recurrence exceptions, embedded timezones/DST, scheduling recipient failures, and OAuth-to-MCP in real workerd. Deployed iCloud workflows are also tested separately; local checks alone do not establish live account connectivity.
 

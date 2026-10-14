@@ -5,6 +5,14 @@
   "compatibility_date": "2026-10-14",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CREATION_RECEIPTS", "class_name": "CreationReceipt" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1-creation", "new_sqlite_classes": ["CreationReceipt"] },
+  ],
   "vars": {
     "PUBLIC_ORIGIN": "https://icloud-calendar-mcp.YOUR-SUBDOMAIN.workers.dev",
   },

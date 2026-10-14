@@ -284,7 +284,7 @@ test(
         result: { content: { text: string }[] };
       };
       assert.match(
-        JSON.parse(blocked.result.content[0].text).error,
+        JSON.parse(blocked.result.content[0].text).error.message,
         /Sender is not allowed/,
       );
       const blockedReceiptResponse = await rpc("tools/call", {

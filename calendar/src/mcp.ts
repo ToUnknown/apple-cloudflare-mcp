@@ -1,10 +1,13 @@
+import { occurrenceSearch } from "./search";
+import { simpleEvent } from "./simple";
+import { createOnce, publicReceipt, OperationError } from "./creation";
+import { actionableError } from "./errors";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { CalDAV, CalendarError, boundedText, type Resource } from "./caldav";
 import {
   eventDetails,
-  filterByTitle,
   uidOf,
   calendarData,
   updateEvent,
@@ -39,26 +42,49 @@ const write = {
 };
 const destructive = { ...write, destructiveHint: true };
 const result = (value: unknown) => ({
+  structuredContent: value as Record<string, unknown>,
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
 });
 export function calendarServer(env: CalendarEnv): McpServer {
   const server = new McpServer({ name: "icloud-calendar", version: "0.1.0" });
   const dav = new CalDAV(env);
-  const safe = <T>(fn: () => Promise<T>) =>
+  const safe = <T>(fn: () => Promise<T>, write = true) =>
     fn()
       .then(result)
-      .catch((error) => ({
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text:
-              error instanceof CalendarError
-                ? error.message
-                : "Invalid or unsupported calendar data; no success was confirmed",
-          },
-        ],
-      }));
+      .catch((error) => {
+        const detail =
+          error instanceof OperationError
+            ? {
+                code: error.code,
+                message: error.message,
+                retryable: false,
+                nextAction: error.nextAction,
+              }
+            : actionableError(
+                error instanceof CalendarError
+                  ? error.message
+                  : "Invalid or unsupported calendar data; no success was confirmed",
+                write,
+              );
+        return { isError: true, ...result({ error: detail }) };
+      });
+  const receipts = (operationId: string) =>
+    env.CREATION_RECEIPTS?.getByName(operationId);
+  server.registerTool(
+    "creation_receipt",
+    {
+      description:
+        "Check creation status without retrying a write. Receipts retain IDs, not event content. A created receipt does not imply the record still exists.",
+      inputSchema: { operationId: z.string().uuid() },
+      annotations: read,
+    },
+    ({ operationId }) =>
+      safe(
+        async () =>
+          publicReceipt((await receipts(operationId)?.receipt()) ?? null),
+        false,
+      ),
+  );
   server.registerTool(
     "calendars_list",
     {
@@ -67,7 +93,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
       inputSchema: {},
       annotations: read,
     },
-    () => safe(() => dav.discover()),
+    () => safe(() => dav.discover(), false),
   );
   server.registerTool(
     "calendars_create",
@@ -101,23 +127,83 @@ export function calendarServer(env: CalendarEnv): McpServer {
     "events_search",
     {
       description:
-        "Find event resources intersecting a date range; optional literal case-insensitive title substring, verified by this server. A master or recurrence-exception title can match; returns the full ICS series, NOT expanded occurrences.",
+        "Search actual event occurrences in a UTC date range (exclusive end). Returns compact occurrence dates/times, all-day status, original recurrenceId, and series start/creation/repeat metadata. Cancelled occurrences excluded; text is a literal case-insensitive occurrence-title substring. Full ICS via events_read/export. Max 1000 occurrences; narrow range on limits.",
       inputSchema: {
         calendarId: id,
         ...range,
         text: z.string().min(1).max(300).optional(),
       },
+      outputSchema: z.object({
+        expanded: z.literal(true),
+        start: z.string(),
+        end: z.string(),
+        defaultTimezone: z.string(),
+        endExclusive: z.literal(true),
+        resources: z.array(
+          z.object({
+            id: z.string(),
+            etag: z.string(),
+            uid: z.string(),
+            expanded: z.literal(true),
+            series: z.object({
+              start: z.string(),
+              timezone: z.string(),
+              createdAt: z.string().nullable(),
+              recurring: z.boolean(),
+              recurrenceRules: z.array(
+                z.object({
+                  rule: z.string(),
+                  frequency: z.string(),
+                  interval: z.number(),
+                  weekdays: z.array(
+                    z.object({
+                      day: z.string(),
+                      ordinal: z.number().nullable(),
+                    }),
+                  ),
+                  count: z.number().nullable(),
+                  until: z.string().nullable(),
+                  parts: z.record(z.unknown()),
+                }),
+              ),
+              additionalDates: z.array(z.string()),
+              excludedDates: z.array(z.string()),
+            }),
+            events: z.array(
+              z.object({
+                summary: z.string(),
+                start: z.string(),
+                end: z.string(),
+                allDay: z.boolean(),
+                timezone: z.string(),
+                localStart: z.string(),
+                localEnd: z.string(),
+                startUtc: z.string(),
+                endUtc: z.string(),
+                recurrenceId: z.string().nullable(),
+                recurrenceTimezone: z.string().nullable(),
+                recurring: z.boolean(),
+                location: z.string().nullable(),
+                status: z.string(),
+              }),
+            ),
+          }),
+        ),
+      }),
       annotations: read,
     },
     ({ calendarId, start, end, text }) =>
-      safe(async () => ({
-        expanded: false,
-        // Fetch the bounded date range without relying on iCloud's text filtering.
-        resources: filterByTitle(
-          await dav.query(calendarId, start, end),
-          text,
-        ).map(eventDetails),
-      })),
+      safe(async () => {
+        const expanded = await dav.query(
+          calendarId,
+          start,
+          end,
+          undefined,
+          true,
+        );
+        const originals = await dav.readMany(calendarId, expanded);
+        return occurrenceSearch(expanded, originals, start, end, text);
+      }, false),
   );
   server.registerTool(
     "events_read",
@@ -127,21 +213,48 @@ export function calendarServer(env: CalendarEnv): McpServer {
       inputSchema: { eventId: id },
       annotations: read,
     },
-    ({ eventId }) => safe(async () => eventDetails(await dav.read(eventId))),
+    ({ eventId }) =>
+      safe(async () => eventDetails(await dav.read(eventId)), false),
   );
   server.registerTool(
     "events_create",
     {
       description:
-        "Create/import one UID including recurrence exceptions as full VCALENDAR ICS. Includes all-day dates and embedded timezone definitions. Stores data; notification delivery is not confirmed.",
-      inputSchema: { calendarId: id, ics },
+        "Create an event with title/start/end, optional allDay/timezone/description/location; local times default Europe/Berlin and are stored as UTC, all-day end is exclusive. For advanced recurrence use full VCALENDAR ics instead. Supply exactly one simple event or ics. Reuse the same UUID operationId and identical input on retries to prevent duplicates; inspect creation_receipt if uncertain.",
+      inputSchema: {
+        calendarId: id,
+        operationId: z.string().uuid(),
+        ics: ics.optional(),
+        event: z
+          .object({
+            title: z.string().min(1).max(1000),
+            start: z.string(),
+            end: z.string(),
+            allDay: z.boolean().default(false),
+            timezone: z.string().max(100).default(DEFAULT_TIMEZONE),
+            description: z.string().max(20000).optional(),
+            location: z.string().max(2000).optional(),
+          })
+          .optional(),
+      },
       annotations: write,
     },
-    ({ calendarId, ics }) =>
+    (args) =>
       safe(async () => {
-        const uid = uidOf(ics);
-        calendarData(ics);
-        return eventDetails(await dav.create(calendarId, uid, ics));
+        if (Boolean(args.ics) === Boolean(args.event))
+          throw new CalendarError("Supply exactly one event or ics");
+        const data = args.ics ?? simpleEvent(args.event!, args.operationId);
+        const uid = uidOf(data);
+        calendarData(data);
+        return createOnce(
+          receipts(args.operationId),
+          args.operationId,
+          args,
+          async () => {
+            const saved = await dav.create(args.calendarId, uid, data);
+            return { id: saved.id, etag: saved.etag, uid };
+          },
+        );
       }),
   );
   server.registerTool(
@@ -211,7 +324,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
       inputSchema: { eventId: id },
       annotations: read,
     },
-    ({ eventId }) => safe(() => dav.read(eventId)),
+    ({ eventId }) => safe(() => dav.read(eventId), false),
   );
   server.registerTool(
     "events_move",
@@ -286,7 +399,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
           scope: "accessible calendars only",
           defaultTimezone: DEFAULT_TIMEZONE,
         };
-      }),
+      }, false),
   );
   server.registerTool(
     "invitations_reply",

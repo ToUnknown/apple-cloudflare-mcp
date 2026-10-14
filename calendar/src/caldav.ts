@@ -114,7 +114,7 @@ export function parseDav(xml: string): DavRow[] {
     const status = stringValue(r.status);
     if (status && !/\s2\d\d(?:\s|$)/.test(status))
       throw new CalendarError(
-        "CalDAV returned an incomplete or failed resource",
+        `CalDAV returned an incomplete or failed resource (HTTP ${status.match(/\s(\d{3})/)?.[1] ?? "unknown"})`,
       );
     const props: XmlRecord = {};
     for (const item of list(r.propstat)) {
@@ -356,6 +356,63 @@ export class CalDAV {
     const ics = stringValue(rows[0].props["calendar-data"]);
     if (!ics) throw new CalendarError("Calendar read omitted event data");
     return { id: href, etag, ics };
+  }
+
+  async readMany(
+    calendarId: string,
+    expected: Resource[],
+  ): Promise<Resource[]> {
+    if (!expected.length) return [];
+    await this.calendar(calendarId);
+    const parent = appleURL(calendarId);
+    const prefix = parent.pathname.endsWith("/")
+      ? parent.pathname
+      : `${parent.pathname}/`;
+    const wanted = new Map(expected.map((r) => [r.id, r.etag]));
+    if (wanted.size !== expected.length || wanted.size > 500)
+      throw new CalendarError("Invalid or oversized resource list");
+    for (const id of wanted.keys()) {
+      const u = appleURL(id);
+      if (
+        u.origin !== parent.origin ||
+        !u.pathname.startsWith(prefix) ||
+        u.pathname.slice(prefix.length).includes("/")
+      )
+        throw new CalendarError("Event is outside the requested calendar");
+    }
+    const result: Resource[] = [];
+    let bytes = 0;
+    for (let offset = 0; offset < expected.length; offset += 50) {
+      const batch = expected.slice(offset, offset + 50);
+      const pending = new Set(batch.map((r) => r.id));
+      const response = await this.request(
+        calendarId,
+        "REPORT",
+        `<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop>${batch.map((r) => `<d:href>${xmlEscape(new URL(r.id).pathname)}</d:href>`).join("")}</c:calendar-multiget>`,
+        { Depth: "1" },
+      );
+      for (const row of parseDav(response.text)) {
+        const id = appleURL(row.href, response.url).href;
+        const etag = stringValue(row.props.getetag),
+          ics = stringValue(row.props["calendar-data"]);
+        if (!pending.delete(id) || !ics)
+          throw new CalendarError(
+            "Incomplete or unexpected search metadata; retry search",
+          );
+        if (etag !== wanted.get(id))
+          throw new CalendarError("ETag conflict during search; retry search");
+        strongEtag(etag);
+        bytes += new TextEncoder().encode(ics).length;
+        if (bytes > 2 * 1024 * 1024)
+          throw new CalendarError(
+            "Search metadata exceeds size limit; narrow the date range",
+          );
+        result.push({ id, etag, ics });
+      }
+      if (pending.size)
+        throw new CalendarError("Incomplete search metadata; retry search");
+    }
+    return result;
   }
 
   async query(

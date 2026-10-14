@@ -1,3 +1,4 @@
+export { CreationReceipt } from "./creation-durable";
 import OAuthProvider, {
   getOAuthApi,
   type OAuthProviderOptions,
@@ -75,6 +76,8 @@ export default {
                 bindings.ICLOUD_USERNAME,
                 bindings.ICLOUD_APP_PASSWORD,
               ),
+              (operationId) =>
+                bindings.CREATION_RECEIPTS.getByName(operationId),
             );
             const transport = new WebStandardStreamableHTTPServerTransport({
               sessionIdGenerator: undefined,
