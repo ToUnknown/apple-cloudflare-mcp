@@ -8,6 +8,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
+import { definedSearch } from "../src/tools";
 import { MAX_MESSAGE } from "../src/schema";
 import {
   source,
@@ -106,6 +107,9 @@ test(
                   );
               }
               ok();
+            } else if (command.startsWith("UID SEARCH ")) {
+              socket.write("* SEARCH 42\r\n");
+              ok();
             } else if (command.startsWith("UID STORE ")) {
               socket.write("* 1 FETCH (UID 42 FLAGS (\\Seen \\Deleted))\r\n");
               ok();
@@ -140,6 +144,27 @@ test(
     try {
       await client.connect();
       const ref = { mailbox: "INBOX", uid: 42, uidValidity: "10" };
+      await client.mailboxOpen("INBOX");
+      await client.search(
+        definedSearch({
+          uid: "1:42",
+          seen: undefined,
+          flagged: undefined,
+          draft: undefined,
+        }),
+        { uid: true },
+      );
+      const defaultSearch = commands
+        .filter((c) => c.includes("UID SEARCH "))
+        .at(-1)!;
+      assert.doesNotMatch(defaultSearch, /UNSEEN|UNFLAGGED|UNDRAFT/);
+      await client.search(definedSearch({ uid: "1:42", seen: false }), {
+        uid: true,
+      });
+      assert.match(
+        commands.filter((c) => c.includes("UID SEARCH ")).at(-1)!,
+        /UNSEEN/,
+      );
       assert.equal((await source(client, ref)).toString(), eml.toString());
       const message = await readMessage(client, ref);
       assert.equal(message.subject, "Synthetic mail");

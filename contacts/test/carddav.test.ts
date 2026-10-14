@@ -129,3 +129,17 @@ describe("CardDAV", () => {
     });
   });
 });
+
+it("decodes numeric XML line endings once without corrupting literal entities", () => {
+  const card =
+    "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:test\r\nFN:Literal &amp;#13;\r\nEND:VCARD\r\n";
+  const rows = multistatus(
+    multi(
+      item(
+        "/test.vcf",
+        `<d:getetag>"v1"</d:getetag><c:address-data>${card.replace(/\r/g, "&#13;")}</c:address-data>`,
+      ),
+    ),
+  );
+  expect(rows[0].props["address-data"]).toBe(card.replace("&amp;", "&"));
+});

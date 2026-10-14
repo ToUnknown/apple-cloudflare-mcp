@@ -26,15 +26,15 @@ For local development, copy `.dev.vars.example` to the ignored `.dev.vars`, repl
 
 | Tools | Behavior |
 | --- | --- |
-| `calendars_list`, `calendars_create`, `calendars_rename` | Discover IDs/privileges/reports; create via MKCALENDAR; rename via PROPPATCH with checked property status. iCloud may refuse management methods. |
+| `calendars_list`, `calendars_create`, `calendars_rename` | Discover IDs/privileges/reports; create via extended MKCOL; rename via PROPPATCH with checked property status. iCloud may refuse management methods. |
 | `events_search`, `events_read` | Bounded date-range and optional SUMMARY text search; full stored ICS, ETag, series and exceptions. Search returns matching resources, **not expanded occurrences**. |
 | `events_create`, `events_update` | Create from complete ICS or patch summary/description/location/times/recurrence rule. Explicit `series` or `occurrence` scope. |
 | `events_import`, `events_export` | Replace one complete UID/series with ETag protection, or export exact stored ICS. Import preserves UID; creation chooses a new resource path. |
-| `events_move`, `events_delete` | Atomic MOVE with overwrite disabled; delete a series or exclude one recurrence occurrence. No unsafe copy/delete fallback if MOVE is unavailable. |
+| `events_move`, `events_delete` | Atomic MOVE between event calendars without overwrite; delete a series or exclude one occurrence. Unsupported destinations are rejected without copy/delete fallback. |
 | `availability` | Busy intervals for selected accessible calendars using CalDAV's server expansion. Not other people's availability. Fails if expansion/timezone certainty is unavailable. |
 | `invitations_reply` | Submit METHOD:REPLY to an advertised scheduling outbox for the authenticated owner's advertised attendee address. Returns per-recipient server status; **does not confirm delivery**. |
 
-Calendar/event IDs are the discovered absolute CalDAV URLs. ETags must be the exact strong quoted value returned by `events_read`. Writes use `If-Match`; creation uses `If-None-Match: *`. A conflict requires another read. MOVE changes the resource ID while preserving its UID. An error after a mutation may mean the server changed data but verification failed; read before retrying.
+Discovery includes supported component types: use `supportsEvents:true` destinations. VTODO-only reminder collections cannot store events. Calendar/event IDs are the discovered absolute CalDAV URLs. ETags must be the exact strong quoted value returned by `events_read`. Writes use `If-Match`; creation uses `If-None-Match: *`. A conflict requires another read. MOVE changes the resource ID while preserving its UID. An error after a mutation may mean the server changed data but verification failed; read before retrying.
 
 For event creation/import provide one VERSION:2.0 VCALENDAR with one UID, one master VEVENT, optional recurrence exceptions, and optional VTIMEZONE definitions. Example:
 
@@ -61,6 +61,6 @@ All-day times use `DTSTART;VALUE=DATE` and exclusive `DTEND;VALUE=DATE`. Structu
 - No calendar sharing, whole-calendar deletion, managed attachment upload/download, Apple-private extension authoring, or inbox processing tools are exposed. Existing unknown properties are preserved rather than interpreted. Apple app-specific passwords do not provide a supported JSON API for those operations.
 - Availability fails closed for all-day/floating events because this implementation has no chosen timezone policy for interpreting them. It also refuses unexpanded recurrence or missing timezone definitions. Use event search/read for those cases.
 - Writing organizer/attendee data stores calendar content; it is **not proof of sending an invitation or notification**. A scheduling outbox must be advertised for reply submission. Server acceptance and recipient status are not delivery proof. Automatic server-side scheduling on event PUT depends on iCloud/account permissions and is unverified.
-- Local tests cover protocol discovery, unsafe redirects/XML, timeouts/bounds, ETags, recurrence exceptions, embedded timezones/DST, scheduling recipient failures, and OAuth-to-MCP in real workerd. No live Apple account, ChatGPT connector, or Cloudflare deployment has been tested.
+- Local tests cover protocol discovery, unsafe redirects/XML, timeouts/bounds, ETags, recurrence exceptions, embedded timezones/DST, scheduling recipient failures, and OAuth-to-MCP in real workerd. Deployed iCloud workflows are also tested separately; local checks alone do not establish live account connectivity.
 
 References: [CalDAV](https://www.rfc-editor.org/rfc/rfc4791), [iCalendar](https://www.rfc-editor.org/rfc/rfc5545), [CalDAV scheduling](https://www.rfc-editor.org/rfc/rfc6638), [Cloudflare OAuth provider](https://github.com/cloudflare/workers-oauth-provider), [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).

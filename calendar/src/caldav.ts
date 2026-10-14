@@ -3,7 +3,14 @@ import type { CalendarEnv } from "./env";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const TIMEOUT_MS = 15_000;
-export class CalendarError extends Error {}
+export class CalendarError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+  }
+}
 export const xmlEscape = (s: string) =>
   s.replace(
     /[&<>"']/g,
@@ -93,6 +100,7 @@ export function parseDav(xml: string): DavRow[] {
     removeNSPrefix: true,
     parseTagValue: false,
     trimValues: false,
+    htmlEntities: true,
   }).parse(xml) as XmlRecord;
   if (!("multistatus" in root))
     throw new CalendarError("Expected a CalDAV multistatus response");
@@ -126,6 +134,8 @@ export interface Calendar {
   etag: string;
   privileges: string[];
   reports: string[];
+  components: string[];
+  supportsEvents: boolean | null;
 }
 export interface Discovery {
   calendars: Calendar[];
@@ -187,11 +197,28 @@ export class CalDAV {
           );
         if (response.status === 401 || response.status === 403)
           throw new CalendarError(
-            "iCloud denied access; check credentials or calendar permissions",
+            `CalDAV ${method} denied (HTTP ${response.status}${[
+              "no-uid-conflict",
+              "valid-calendar-data",
+              "calendar-collection-location-ok",
+              "need-privileges",
+              "supported-calendar-component",
+              "valid-calendar-object-resource",
+              "allowed-organizer-scheduling-object-change",
+            ]
+              .filter((condition) =>
+                new RegExp(
+                  `<(?:(?:[A-Za-z0-9_-]+):)?${condition}(?:\\s|/|>)`,
+                ).test(text),
+              )
+              .map((condition) => `; ${condition}`)
+              .join("")}); check permissions or operation support`,
+            response.status,
           );
         if (response.status < 200 || response.status >= 300)
           throw new CalendarError(
             `CalDAV ${method} failed (HTTP ${response.status})`,
+            response.status,
           );
         return {
           status: response.status,
@@ -240,7 +267,7 @@ export class CalDAV {
       home,
       "PROPFIND",
       propfind(
-        "<d:resourcetype/><d:displayname/><d:getetag/><d:current-user-privilege-set/><d:supported-report-set/><c:calendar-description/>",
+        "<d:resourcetype/><d:displayname/><d:getetag/><d:current-user-privilege-set/><d:supported-report-set/><c:calendar-description/><c:supported-calendar-component-set/>",
       ),
       { Depth: "1" },
     );
@@ -251,6 +278,17 @@ export class CalDAV {
         name: stringValue(row.props.displayname),
         description: stringValue(row.props["calendar-description"]),
         etag: stringValue(row.props.getetag),
+        components: list(
+          record(row.props["supported-calendar-component-set"]).comp,
+        )
+          .map((c) => stringValue(record(c)["@_name"]))
+          .filter(Boolean),
+        supportsEvents:
+          row.props["supported-calendar-component-set"] === undefined
+            ? null
+            : list(
+                record(row.props["supported-calendar-component-set"]).comp,
+              ).some((c) => stringValue(record(c)["@_name"]) === "VEVENT"),
         privileges: list(
           record(row.props["current-user-privilege-set"]).privilege,
         ).flatMap((v) => Object.keys(record(v))),
@@ -273,6 +311,10 @@ export class CalDAV {
       throw new CalendarError(
         "Calendar is not accessible; use calendars_list first",
       );
+    if (calendar.supportsEvents === false)
+      throw new CalendarError(
+        "This collection does not support VEVENT events; choose an event calendar from calendars_list",
+      );
     return calendar;
   }
   async eventURL(id: string): Promise<string> {
@@ -280,6 +322,7 @@ export class CalDAV {
     const { calendars } = await this.discover();
     if (
       !calendars.some((c) => {
+        if (c.supportsEvents === false) return false;
         const parent = new URL(c.id);
         const prefix = parent.pathname.endsWith("/")
           ? parent.pathname
@@ -297,14 +340,24 @@ export class CalDAV {
   }
   async read(id: string): Promise<Resource> {
     const href = await this.eventURL(id);
-    const result = await this.request(href, "GET", undefined, {
-      Accept: "text/calendar",
-    });
-    const etag = result.headers.get("etag");
-    if (!etag || etag.startsWith("W/"))
-      throw new CalendarError("A strong ETag is required for reliable edits");
-    return { id: result.url, etag, ics: result.text };
+    // REPORT returns the entity and its strong ETag atomically. iCloud GET may use a weak ETag.
+    const parent = new URL(".", href).href;
+    const result = await this.request(
+      parent,
+      "REPORT",
+      `<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><d:href>${xmlEscape(new URL(href).pathname)}</d:href></c:calendar-multiget>`,
+      { Depth: "1" },
+    );
+    const rows = parseDav(result.text);
+    if (rows.length !== 1 || appleURL(rows[0].href, result.url).href !== href)
+      throw new CalendarError("Calendar read returned an unexpected resource");
+    const etag = stringValue(rows[0].props.getetag);
+    strongEtag(etag);
+    const ics = stringValue(rows[0].props["calendar-data"]);
+    if (!ics) throw new CalendarError("Calendar read omitted event data");
+    return { id: href, etag, ics };
   }
+
   async query(
     calendarId: string,
     start: string,
@@ -353,7 +406,13 @@ export class CalDAV {
       "Content-Type": "text/calendar; charset=utf-8",
       "If-None-Match": "*",
     });
-    return this.read(url);
+    try {
+      return await this.read(url);
+    } catch {
+      throw new CalendarError(
+        `Event was created at ${url}, but verification failed. Do not create again; read this event ID.`,
+      );
+    }
   }
   async replace(id: string, etag: string, ics: string): Promise<Resource> {
     strongEtag(etag);
@@ -362,7 +421,13 @@ export class CalDAV {
       "Content-Type": "text/calendar; charset=utf-8",
       "If-Match": etag,
     });
-    return this.read(href);
+    try {
+      return await this.read(href);
+    } catch {
+      throw new CalendarError(
+        `Event was updated at ${href}, but verification failed. Read it again before another edit.`,
+      );
+    }
   }
   async remove(id: string, etag: string): Promise<void> {
     strongEtag(etag);
@@ -380,12 +445,22 @@ export class CalDAV {
     ).href;
     if (source === destination)
       throw new CalendarError("Source and destination calendar are the same");
+    if (new URL(source).origin !== new URL(destination).origin)
+      throw new CalendarError(
+        "Moving between different CalDAV origins is unsupported",
+      );
     await this.request(source, "MOVE", undefined, {
       Destination: destination,
       Overwrite: "F",
       "If-Match": etag,
     });
-    return this.read(destination);
+    try {
+      return await this.read(destination);
+    } catch {
+      throw new CalendarError(
+        `Move completed to ${destination}, but verification failed. Read that ID before retrying.`,
+      );
+    }
   }
   async createCalendar(name: string, description = ""): Promise<Calendar> {
     const { home } = await this.discover();
@@ -393,10 +468,11 @@ export class CalDAV {
       `${crypto.randomUUID()}/`,
       home.endsWith("/") ? home : `${home}/`,
     ).href;
+    // RFC5689 extended MKCOL is equivalent; Workers fetch rejects MKCALENDAR.
     await this.request(
       href,
-      "MKCALENDAR",
-      `<c:mkcalendar xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:set><d:prop><d:displayname>${xmlEscape(name)}</d:displayname><c:calendar-description>${xmlEscape(description)}</c:calendar-description><c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set></d:prop></d:set></c:mkcalendar>`,
+      "MKCOL",
+      `<d:mkcol xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:set><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>${xmlEscape(name)}</d:displayname><c:calendar-description>${xmlEscape(description)}</c:calendar-description><c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set></d:prop></d:set></d:mkcol>`,
       { "If-None-Match": "*" },
     );
     const created = (await this.discover()).calendars.find(

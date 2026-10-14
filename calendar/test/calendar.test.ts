@@ -1,11 +1,18 @@
 import { describe, test, expect, vi } from "vitest";
-import { CalDAV, appleURL, boundedText, parseDav } from "../src/caldav";
+import {
+  CalDAV,
+  CalendarError,
+  appleURL,
+  boundedText,
+  parseDav,
+} from "../src/caldav";
 import {
   calendarData,
   eventDetails,
   updateEvent,
   excludeOccurrence,
   busyIntervals,
+  expandedTimezones,
   validateReply,
 } from "../src/ical";
 const origin = "https://p01-caldav.icloud.com";
@@ -57,6 +64,19 @@ function fixture(
       );
     if (init.method === "GET" && url.endsWith(".ics"))
       return new Response(sample, { headers: { ETag: '"v1"' } });
+    if (
+      init.method === "REPORT" &&
+      String(init.body).includes("calendar-multiget")
+    ) {
+      const href = String(init.body).match(/<d:href>(.*?)<\/d:href>/)![1];
+      return new Response(
+        xml(
+          `<d:getetag>"v1"</d:getetag><c:calendar-data>${escape(sample).replace(/\r/g, "&#13;")}</c:calendar-data>`,
+          href,
+        ),
+        { status: 207 },
+      );
+    }
     if (init.method === "REPORT")
       return new Response(
         xml(
@@ -65,7 +85,7 @@ function fixture(
         ),
         { status: 207 },
       );
-    if (["PUT", "MOVE", "DELETE", "MKCALENDAR"].includes(init.method ?? ""))
+    if (["PUT", "MOVE", "DELETE", "MKCOL"].includes(init.method ?? ""))
       return new Response(null, { status: 204 });
     throw new Error(`Unexpected synthetic request ${init.method} ${url}`);
   });
@@ -424,4 +444,165 @@ test("scheduling replies validate owner identity and expose recipient failure", 
   const statuses = await dav.schedule(reply, validateReply(reply));
   expect(statuses[0].status).toBe("3.7;Invalid calendar user");
   expect(statuses[0].status.startsWith("2.")).toBe(false);
+});
+
+test("numeric XML line endings retain calendar versions and event data", () => {
+  const data = sample.replace(/\r/g, "&#13;");
+  const rows = parseDav(
+    xml(
+      `<d:getetag>"v1"</d:getetag><c:calendar-data>${data}</c:calendar-data>`,
+    ),
+  );
+  expect(rows[0].props["calendar-data"]).toBe(sample);
+  expect(calendarData(String(rows[0].props["calendar-data"]))).toBeTruthy();
+});
+test("event read uses REPORT ETag and matching resource, never weak GET ETags", async () => {
+  const mock = fixture();
+  const dav = new CalDAV(env, mock as typeof fetch);
+  expect(await dav.read(calendar + "event-one.ics")).toMatchObject({
+    etag: '"v1"',
+    ics: sample,
+  });
+  expect(mock.mock.calls.some(([, init]) => init?.method === "GET")).toBe(
+    false,
+  );
+});
+
+test("iCloud expanded responses may omit VERSION without losing UTC intervals", () => {
+  const expanded = sample
+    .replace("VERSION:2.0\r\n", "")
+    .replace("RRULE:FREQ=DAILY;COUNT=3\r\n", "");
+  expect(
+    busyIntervals(
+      [{ id: calendar + "one.ics", etag: '"v1"', ics: expanded }],
+      "2026-10-14T00:00:00Z",
+      "2026-10-15T00:00:00Z",
+    ),
+  ).toEqual([
+    {
+      start: "2026-10-14T10:00:00.000Z",
+      end: "2026-10-14T11:00:00.000Z",
+      eventId: calendar + "one.ics",
+    },
+  ]);
+});
+test("MOVE uses conditional atomic request and never copy/delete fallback", async () => {
+  const calls: string[] = [];
+  class MovingDAV extends CalDAV {
+    async eventURL(id: string) {
+      return id;
+    }
+    async calendar(id: string) {
+      return {
+        id,
+        name: "Test",
+        description: "",
+        etag: "",
+        privileges: ["write"],
+        reports: [],
+        components: ["VEVENT"],
+        supportsEvents: true,
+      };
+    }
+    async read(id: string) {
+      return { id, etag: '"v1"', ics: sample };
+    }
+    async request(
+      url: string,
+      method: string,
+      body?: string,
+      headers: Record<string, string> = {},
+    ) {
+      calls.push(method);
+      expect(headers["If-Match"]).toBe('"v1"');
+      expect(headers.Overwrite).toBe("F");
+      expect(headers.Destination).toBe(origin + "/u/second/one.ics");
+      throw new CalendarError("Unsupported", 403);
+    }
+  }
+  await expect(
+    new MovingDAV(env).move(
+      calendar + "one.ics",
+      origin + "/u/second/",
+      '"v1"',
+    ),
+  ).rejects.toThrow("Unsupported");
+  expect(calls).toEqual(["MOVE"]);
+});
+test("VTODO-only collections are visible but reject event operations before writing", async () => {
+  const mock = fixture((url, init) =>
+    url === origin + "/u/"
+      ? new Response(
+          xml(
+            '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype><c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>',
+          ),
+          { status: 207 },
+        )
+      : undefined,
+  );
+  const dav = new CalDAV(env, mock as typeof fetch);
+  expect((await dav.discover()).calendars[0]).toMatchObject({
+    components: ["VTODO"],
+    supportsEvents: false,
+  });
+  await expect(dav.create(calendar, "one", sample)).rejects.toThrow(
+    "does not support VEVENT",
+  );
+  expect(mock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(
+    false,
+  );
+});
+test("expanded timezone hydration uses same-version original definitions", async () => {
+  const full = sample
+    .replace("BEGIN:VEVENT", berlinZone + "BEGIN:VEVENT")
+    .replace("RRULE:FREQ=DAILY;COUNT=3\r\n", "")
+    .replace(
+      "DTSTART:20261014T100000Z",
+      "DTSTART;TZID=Europe/Berlin:20261014T100000",
+    )
+    .replace(
+      "DTEND:20261014T110000Z",
+      "DTEND;TZID=Europe/Berlin:20261014T110000",
+    );
+  const original = { id: calendar + "tz.ics", etag: '"v1"', ics: full };
+  const expanded = {
+    ...original,
+    ics: full.replace(berlinZone, "").replace("VERSION:2.0\r\n", ""),
+  };
+  const resources = await expandedTimezones([expanded], async () => original);
+  expect(
+    busyIntervals(resources, "2026-10-14T00:00:00Z", "2026-10-15T00:00:00Z")[0]
+      .start,
+  ).toBe("2026-10-14T08:00:00.000Z");
+  await expect(
+    expandedTimezones([expanded], async () => ({ ...original, etag: '"v2"' })),
+  ).rejects.toThrow("changed");
+});
+
+test("calendar creation uses Workers-supported extended MKCOL with calendar resource type", async () => {
+  let createdId = "";
+  const mock = fixture((url, init) => {
+    if (init.method === "MKCOL") {
+      createdId = url;
+      expect(String(init.body)).toContain(
+        "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>",
+      );
+      expect(String(init.body)).toContain("<d:mkcol");
+      return new Response(null, { status: 201 });
+    }
+    if (createdId && url === origin + "/u/")
+      return new Response(
+        xml(
+          "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>Fixture</d:displayname>",
+          new URL(createdId).pathname,
+        ),
+        { status: 207 },
+      );
+  });
+  expect(
+    (await new CalDAV(env, mock as typeof fetch).createCalendar("Fixture")).id,
+  ).toBe(createdId);
+  expect(
+    mock.mock.calls.some(([, init]) => init?.method === "MKCALENDAR"),
+  ).toBe(false);
 });

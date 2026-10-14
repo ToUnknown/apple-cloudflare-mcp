@@ -1,5 +1,6 @@
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
+import { connect as connectTcp, type Socket } from "node:net";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import PostalMime, { type Email } from "postal-mime";
 import {
@@ -243,6 +244,36 @@ export async function buildMessage(
 }
 export function smtpTransport(env: Credentials) {
   return nodemailer.createTransport({
+    // Delegate DNS/socket establishment to Workers instead of Nodemailer's Node DNS resolver.
+    getSocket(
+      _options: unknown,
+      callback: (
+        error: Error | null,
+        options?: { connection: Socket } | false,
+      ) => void,
+    ) {
+      const socket = connectTcp({ host: "smtp.mail.me.com", port: 587 });
+      let settled = false;
+      const done = (error: Error | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.removeListener("error", onError);
+        callback(error, error ? undefined : { connection: socket });
+      };
+      const onError = (error: Error) => done(error);
+      const timer = setTimeout(
+        () =>
+          socket.destroy(
+            Object.assign(new Error("SMTP connection timeout"), {
+              code: "ETIMEDOUT",
+            }),
+          ),
+        15000,
+      );
+      socket.once("error", onError);
+      socket.once("connect", () => done(null));
+    },
     host: "smtp.mail.me.com",
     port: 587,
     secure: false,

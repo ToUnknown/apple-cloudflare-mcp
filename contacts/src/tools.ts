@@ -3,6 +3,8 @@ import { z } from "zod";
 import { CardDAV, DavError } from "./carddav";
 import {
   parseCard,
+  property,
+  baseName,
   patchCard,
   clearProperties,
   newCard,
@@ -95,19 +97,15 @@ export function createServer(dav: CardDAV): McpServer {
     let scanned = args.offset;
     let bytes = 0;
     const q = args.query.toLocaleLowerCase();
-    while (scanned < inventory.length && found.length < args.limit) {
-      const batch = inventory.slice(
-        scanned,
-        Math.min(
-          inventory.length,
-          scanned + Math.min(25, args.limit - found.length),
-        ),
-      );
+    const scanEnd = Math.min(inventory.length, args.offset + 250);
+    while (scanned < scanEnd && found.length < args.limit) {
+      const batch = inventory.slice(scanned, Math.min(scanEnd, scanned + 25));
       const cards = await dav.readMany(
         batch.map((i) => i.id),
         args.addressbookId,
       );
       for (const card of cards) {
+        if (found.length >= args.limit) break;
         scanned++;
         if (
           card.group === groups &&
@@ -126,7 +124,7 @@ export function createServer(dav: CardDAV): McpServer {
       inventoryCount: inventory.length,
       scannedThrough: scanned,
       pagingNote:
-        "Offsets apply to sorted inventory. Restart at 0 after adding/deleting records.",
+        "Offsets apply to sorted inventory. Follow nextOffset even when records is empty; each call scans at most 250 records. Restart at 0 after adding/deleting records.",
     };
   }
   server.registerTool(
@@ -371,7 +369,7 @@ export function createServer(dav: CardDAV): McpServer {
     "import_vcards",
     {
       description:
-        "Import up to 100 validated vCards as new records; preserves every field. Existing UID collisions are rejected. Group cards are rejected because external member references may be invalid. Returns each success/failure; import is not atomic and retries must exclude successes.",
+        "Import up to 100 validated vCards as new records; preserves fields; non-UUID UIDs are mapped to new UUIDs and retained in X-MCP-ORIGINAL-UID. Existing UID collisions are rejected. Group cards are rejected because external member references may be invalid. Returns each success/failure; import is not atomic and retries must exclude successes.",
       inputSchema: {
         ...book,
         vcard: z
@@ -394,8 +392,14 @@ export function createServer(dav: CardDAV): McpServer {
           for (const c of await dav.readMany(
             inventory.slice(i, i + 25).map((r) => r.id),
             args.addressbookId,
-          ))
+          )) {
             uids.add(c.uid);
+            for (const original of values(
+              parseCard(c.vcard),
+              "X-MCP-ORIGINAL-UID",
+            ))
+              uids.add(original);
+          }
         const records = [];
         for (let i = 0; i < cards.length; i++) {
           const lines = parseCard(cards[i]);
@@ -403,14 +407,38 @@ export function createServer(dav: CardDAV): McpServer {
           try {
             if (uids.has(uid))
               throw new Error("UID already exists; no overwrite performed");
+            const normalized =
+              /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(uid)
+                ? uid
+                : crypto.randomUUID();
+            const importedLines =
+              normalized === uid
+                ? lines
+                : lines.map((line) =>
+                    baseName(property(line)) === "UID"
+                      ? `UID:${normalized}`
+                      : line,
+                  );
+            if (normalized !== uid)
+              importedLines.splice(
+                importedLines.length - 1,
+                0,
+                `X-MCP-ORIGINAL-UID:${uid}`,
+              );
             const saved = await dav.save(
               undefined,
-              lines,
+              importedLines,
               undefined,
               args.addressbookId,
             );
             uids.add(uid);
-            records.push({ index: i, uid, ...saved });
+            uids.add(normalized);
+            records.push({
+              index: i,
+              uid: normalized,
+              ...(normalized !== uid ? { originalUid: uid } : {}),
+              ...saved,
+            });
           } catch (e) {
             records.push({
               index: i,

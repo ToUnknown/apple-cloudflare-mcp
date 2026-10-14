@@ -9,6 +9,9 @@ export interface Receipt {
   rejected?: string[];
   sentCopy?: "saved" | "failed";
   warning?: string;
+  errorCode?: string;
+  errorCommand?: string;
+  errorType?: string;
 }
 export interface ReceiptStore {
   reserve(receipt: Receipt): Promise<Receipt | null>;
@@ -41,10 +44,35 @@ export async function runSend(
     const receipt: Receipt = { ...initial, ...result, status: "accepted" };
     await store.save(receipt);
     return receipt;
-  } catch {
+  } catch (error) {
+    const detail =
+      error && typeof error === "object"
+        ? (error as Record<string, unknown>)
+        : {};
+    // Include only bounded protocol identifiers, never provider text, credentials, or message content.
+    const code =
+      typeof detail.code === "string" && /^[A-Z_0-9]{1,32}$/.test(detail.code)
+        ? detail.code
+        : undefined;
+    const command =
+      typeof detail.command === "string" &&
+      /^(CONN|EHLO|HELO|STARTTLS|AUTH(?: [A-Z0-9-]+)?|MAIL FROM|RCPT TO|DATA|QUIT)$/.test(
+        detail.command,
+      )
+        ? detail.command
+        : undefined;
+    const type =
+      detail.name === "TypeError"
+        ? "TypeError"
+        : detail.name === "Error"
+          ? "Error"
+          : undefined;
     const receipt: Receipt = {
       ...initial,
       status: "uncertain",
+      errorCode: code,
+      errorCommand: command,
+      errorType: type,
       warning:
         "Submission was not confirmed. It may have been accepted. This operationId will never send again; inspect Sent/recipient state before considering a new send.",
     };

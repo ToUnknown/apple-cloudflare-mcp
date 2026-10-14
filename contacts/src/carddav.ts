@@ -125,6 +125,7 @@ export function multistatus(body: string): DavItem[] {
       parseTagValue: false,
       trimValues: false,
       processEntities: true,
+      htmlEntities: true,
     }).parse(body),
   );
   const root = object(parsed.multistatus);
@@ -206,9 +207,11 @@ export class CardDAV {
             ? "CONFLICT"
             : response.status === 404
               ? "NOT_FOUND"
-              : response.status === 401 || response.status === 403
+              : response.status === 401
                 ? "AUTH_FAILED"
-                : "DAV_FAILED",
+                : response.status === 403
+                  ? "FORBIDDEN"
+                  : "DAV_FAILED",
           response.status === 412
             ? "Record changed; read current ETag before retrying"
             : `CardDAV request failed (${response.status})`,

@@ -298,6 +298,47 @@ export function excludeOccurrence(ics: string, recurrenceId: string): string {
   touched(master);
   return calendar.toString();
 }
+// iCloud's expanded calendar-data can retain TZIDs while omitting VTIMEZONE.
+// Restore definitions only from the same resource version, never guess a zone.
+export async function expandedTimezones(
+  resources: Resource[],
+  read: (id: string) => Promise<Resource>,
+): Promise<Resource[]> {
+  const result: Resource[] = [];
+  for (const resource of resources) {
+    const expanded = new ICAL.Component(ICAL.parse(resource.ics));
+    const missing = new Set<string>();
+    for (const event of expanded.getAllSubcomponents("vevent")) {
+      for (const field of ["dtstart", "dtend"]) {
+        const zone = event.getFirstProperty(field)?.getParameter("tzid");
+        if (zone && zone !== "UTC" && !expanded.getTimeZoneByID(String(zone)))
+          missing.add(String(zone));
+      }
+    }
+    if (!missing.size) {
+      result.push(resource);
+      continue;
+    }
+    const original = await read(resource.id);
+    if (original.etag !== resource.etag)
+      throw new CalendarError("Event changed during availability check; retry");
+    const calendar = calendarData(original.ics);
+    for (const zone of missing) {
+      const definition = calendar
+        .getAllSubcomponents("vtimezone")
+        .find((component) => component.getFirstPropertyValue("tzid") === zone);
+      if (!definition)
+        throw new CalendarError(
+          "Availability requires full timezone definitions",
+        );
+      expanded.addSubcomponent(
+        new ICAL.Component(ICAL.parse(definition.toString())),
+      );
+    }
+    result.push({ ...resource, ics: expanded.toString() });
+  }
+  return result;
+}
 export function busyIntervals(
   resources: Resource[],
   start: string,
@@ -314,10 +355,13 @@ export function busyIntervals(
     }
     if (
       calendar.name !== "vcalendar" ||
-      calendar.getFirstPropertyValue("version") !== "2.0" ||
+      (calendar.hasProperty("version") &&
+        calendar.getFirstPropertyValue("version") !== "2.0") ||
       !calendar.getAllSubcomponents("vevent").length
     )
-      throw new CalendarError("Expanded calendar data is missing events");
+      throw new CalendarError(
+        "Expanded calendar data is missing events or has an unsupported version",
+      );
     for (const component of calendar.getAllSubcomponents("vevent")) {
       if (!component.hasProperty("dtstart"))
         throw new CalendarError("Expanded event is missing DTSTART");

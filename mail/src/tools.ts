@@ -57,6 +57,11 @@ export function safeError(error: unknown): string {
   // Protocol exceptions may contain credentials, mailbox contents or raw server replies.
   return "Mail operation failed. Check account credentials, connectivity and server limits. A write may have completed; inspect mailbox state before repeating it.";
 }
+export function definedSearch(query: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(query).filter(([, value]) => value !== undefined),
+  );
+}
 export function createServer(env: AppEnv): McpServer {
   const server = new McpServer({ name: "icloud-mail", version: "0.1.0" });
   function tool<S extends z.ZodRawShape>(
@@ -199,7 +204,7 @@ export function createServer(env: AppEnv): McpServer {
           );
           if (upper < 1) return { messages: [], nextBeforeUid: null };
           const lower = Math.max(1, upper - 9999);
-          const query = {
+          const query = definedSearch({
             uid: `${lower}:${upper}`,
             text: input.text,
             from: input.from,
@@ -210,7 +215,7 @@ export function createServer(env: AppEnv): McpServer {
             draft: input.draft,
             since: input.since,
             before: input.before,
-          };
+          });
           const found = await c.search(query, { uid: true });
           const uids = (found || [])
             .filter((n) => n >= lower && n <= upper)

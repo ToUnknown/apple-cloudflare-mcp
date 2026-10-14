@@ -188,9 +188,15 @@ test("durable receipt reserves before SMTP, suppresses duplicate/reused/unknown 
   saved = undefined;
   const unknown = await runSend(store, initial, async () => {
     count++;
-    throw new Error("SMTP dropped after DATA");
+    throw Object.assign(new Error("secret SMTP reply and password"), {
+      code: "ETIMEDOUT",
+      command: "DATA",
+    });
   });
   assert.equal("status" in unknown && unknown.status, "uncertain");
+  assert.ok("errorCode" in unknown && unknown.errorCode === "ETIMEDOUT");
+  assert.ok("errorCommand" in unknown && unknown.errorCommand === "DATA");
+  assert.doesNotMatch(JSON.stringify(unknown), /secret SMTP|password/);
   await runSend(store, initial, action);
   assert.equal(count, 2);
 });

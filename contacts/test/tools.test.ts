@@ -223,3 +223,69 @@ describe("Contacts tools through real MCP SDK", () => {
     }
   });
 });
+
+it("search batches independently of result limit and exposes continuation for empty pages", async () => {
+  const { dav, client, server } = await session();
+  try {
+    for (let i = 0; i < 260; i++)
+      await dav.save(undefined, newCard(`Person ${i}`));
+    let requests = 0;
+    const original = dav.readMany.bind(dav);
+    dav.readMany = async (ids) => {
+      requests++;
+      return original(ids);
+    };
+    const first = payload(
+      await client.callTool({
+        name: "search_contacts",
+        arguments: { query: "not-present", limit: 1 },
+      }),
+    );
+    expect(first.records).toEqual([]);
+    expect(first.nextOffset).toBe(250);
+    expect(requests).toBe(10);
+    const last = payload(
+      await client.callTool({
+        name: "search_contacts",
+        arguments: { query: "not-present", limit: 1, offset: 250 },
+      }),
+    );
+    expect(last.nextOffset).toBeNull();
+    const one = payload(
+      await client.callTool({
+        name: "search_contacts",
+        arguments: { limit: 1 },
+      }),
+    );
+    expect(one.records).toHaveLength(1);
+    expect(one.nextOffset).toBe(1);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+it("maps non-UUID import IDs while retaining original ID and preventing repeat imports", async () => {
+  const { dav, client, server } = await session();
+  try {
+    const vcard =
+      "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:external-test-123\r\nFN:Imported Fixture\r\nX-CUSTOM:preserved\r\nEND:VCARD\r\n";
+    const result = payload(
+      await client.callTool({ name: "import_vcards", arguments: { vcard } }),
+    ).records[0];
+    expect(result.saved).toBe(true);
+    expect(result.originalUid).toBe("external-test-123");
+    expect(result.uid).toMatch(/^[0-9a-f-]{36}$/);
+    const stored = await dav.read(result.id);
+    expect(stored.vcard).toContain("X-MCP-ORIGINAL-UID:external-test-123");
+    expect(stored.vcard).toContain("X-CUSTOM:preserved");
+    const again = payload(
+      await client.callTool({ name: "import_vcards", arguments: { vcard } }),
+    ).records[0];
+    expect(again.error).toBe("IMPORT_FAILED");
+    expect(dav.writes).toBe(1);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});

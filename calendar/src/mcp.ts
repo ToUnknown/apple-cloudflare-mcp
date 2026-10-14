@@ -9,6 +9,7 @@ import {
   updateEvent,
   excludeOccurrence,
   busyIntervals,
+  expandedTimezones,
   validateReply,
 } from "./ical";
 import type { CalendarEnv } from "./env";
@@ -60,7 +61,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
     "calendars_list",
     {
       description:
-        "Discover accessible calendars, privileges and advertised reports. IDs are stable CalDAV URLs.",
+        "Discover accessible calendars, supported components, privileges and reports. Use supportsEvents:true for event operations; VTODO-only collections are not event calendars. IDs are stable CalDAV URLs.",
       inputSchema: {},
       annotations: read,
     },
@@ -70,7 +71,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
     "calendars_create",
     {
       description:
-        "Create a calendar using MKCALENDAR. Server may refuse this capability.",
+        "Create a VEVENT calendar using extended MKCOL (RFC5689). Server may refuse this capability.",
       inputSchema: {
         name: z.string().min(1).max(300),
         description: z.string().max(2000).optional(),
@@ -212,7 +213,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
     "events_move",
     {
       description:
-        "Move the entire event series using atomic DAV MOVE with If-Match and Overwrite:F. Fails if the server does not support MOVE.",
+        "Move an entire series to a VEVENT-capable calendar with atomic DAV MOVE, ETag protection and no overwrite. Unsupported destinations are rejected; no delete-first fallback.",
       inputSchema: { eventId: id, calendarId: id, etag },
       annotations: destructive,
     },
@@ -271,7 +272,11 @@ export function calendarServer(env: CalendarEnv): McpServer {
           );
         return {
           calendarIds,
-          busy: busyIntervals(resources, start, end),
+          busy: busyIntervals(
+            await expandedTimezones(resources, (id) => dav.read(id)),
+            start,
+            end,
+          ),
           start,
           end,
           scope: "accessible calendars only",
