@@ -366,13 +366,27 @@ export class CalDAV {
     expand = false,
   ): Promise<Resource[]> {
     await this.calendar(calendarId);
-    const startDate = rangeStamp(start),
+    let startDate = rangeStamp(start),
       endDate = rangeStamp(end);
     if (
       Date.parse(start) >= Date.parse(end) ||
       Date.parse(end) - Date.parse(start) > 366 * 86400000
     )
       throw new CalendarError("Range must be increasing and at most 366 days");
+    // Floating/DATE events may be filtered using the server's timezone. Widen
+    // discovery so Berlin-local boundary events are retained, then clip locally.
+    if (expand) {
+      startDate = rangeStamp(
+        new Date(Date.parse(start) - 86400000)
+          .toISOString()
+          .replace(".000Z", "Z"),
+      );
+      endDate = rangeStamp(
+        new Date(Date.parse(end) + 86400000)
+          .toISOString()
+          .replace(".000Z", "Z"),
+      );
+    }
     const body = `<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data>${expand ? `<c:expand start="${startDate}" end="${endDate}"/>` : ""}</c:calendar-data></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="${startDate}" end="${endDate}"/>${text ? `<c:prop-filter name="SUMMARY"><c:text-match collation="i;unicode-casemap">${xmlEscape(text)}</c:text-match></c:prop-filter>` : ""}</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`;
     const response = await this.request(calendarId, "REPORT", body, {
       Depth: "1",

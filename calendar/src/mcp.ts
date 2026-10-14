@@ -10,6 +10,7 @@ import {
   excludeOccurrence,
   busyIntervals,
   expandedTimezones,
+  DEFAULT_TIMEZONE,
   validateReply,
 } from "./ical";
 import type { CalendarEnv } from "./env";
@@ -259,7 +260,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
     "availability",
     {
       description:
-        "Return busy intervals from accessible calendars using server-expanded recurrence. Fails closed if expansion or timezone certainty is unavailable. All-day/floating events require manual interpretation. Does not report attendees’ availability.",
+        "Return busy intervals from accessible calendars using server-expanded recurrence. Fails closed if expansion or timezone certainty is unavailable. All-day and floating times default to Europe/Berlin, respecting DST; all-day events block local midnight to exclusive end midnight. Does not report attendees’ availability.",
       inputSchema: { calendarIds: z.array(id).min(1).max(10), ...range },
       annotations: read,
     },
@@ -280,6 +281,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
           start,
           end,
           scope: "accessible calendars only",
+          defaultTimezone: DEFAULT_TIMEZONE,
         };
       }),
   );

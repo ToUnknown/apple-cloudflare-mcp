@@ -1,5 +1,7 @@
 import ICAL from "ical.js";
+import { Temporal } from "@js-temporal/polyfill";
 import { CalendarError, type Resource } from "./caldav";
+export const DEFAULT_TIMEZONE = "Europe/Berlin";
 type Component = InstanceType<typeof ICAL.Component>;
 type Time = InstanceType<typeof ICAL.Time>;
 export interface Patch {
@@ -339,6 +341,25 @@ export async function expandedTimezones(
   }
   return result;
 }
+function defaultZonedTime(time: Time): Temporal.ZonedDateTime {
+  return Temporal.ZonedDateTime.from(
+    {
+      timeZone: DEFAULT_TIMEZONE,
+      year: time.year,
+      month: time.month,
+      day: time.day,
+      hour: time.isDate ? 0 : time.hour,
+      minute: time.isDate ? 0 : time.minute,
+      second: time.isDate ? 0 : time.second,
+    },
+    { disambiguation: "compatible", overflow: "reject" },
+  );
+}
+function availabilityTime(time: Time): number {
+  return time.isDate || time.zone.tzid === "floating"
+    ? defaultZonedTime(time).epochMilliseconds
+    : time.toUnixTime() * 1000;
+}
 export function busyIntervals(
   resources: Resource[],
   start: string,
@@ -375,14 +396,6 @@ export function busyIntervals(
       )
         continue;
       const event = new ICAL.Event(component);
-      if (
-        event.startDate.isDate ||
-        event.startDate.zone.tzid === "floating" ||
-        event.endDate.zone.tzid === "floating"
-      )
-        throw new CalendarError(
-          "All-day or floating events need an explicit timezone policy; use event queries to assess them",
-        );
       for (const field of ["dtstart", "dtend"]) {
         const tzid = component.getFirstProperty(field)?.getParameter("tzid");
         if (tzid && tzid !== "UTC" && !calendar.getTimeZoneByID(String(tzid)))
@@ -390,11 +403,30 @@ export function busyIntervals(
             "Availability requires full timezone definitions",
           );
       }
-      const first = Math.max(
-          event.startDate.toUnixTime() * 1000,
-          Date.parse(start),
-        ),
-        last = Math.min(event.endDate.toUnixTime() * 1000, Date.parse(end));
+      const begins = availabilityTime(event.startDate);
+      let ends = availabilityTime(event.endDate);
+      // Calendar days follow local midnight; hour durations are elapsed hours across DST.
+      if (
+        !component.hasProperty("dtend") &&
+        component.hasProperty("duration") &&
+        (event.startDate.isDate || event.startDate.zone.tzid === "floating")
+      ) {
+        const duration = event.duration;
+        const sign = duration.isNegative ? -1 : 1;
+        ends = defaultZonedTime(event.startDate).add({
+          weeks: sign * duration.weeks,
+          days: sign * duration.days,
+          hours: sign * duration.hours,
+          minutes: sign * duration.minutes,
+          seconds: sign * duration.seconds,
+        }).epochMilliseconds;
+      }
+      if (ends < begins)
+        throw new CalendarError(
+          "Event end precedes its start under the timezone policy",
+        );
+      const first = Math.max(begins, Date.parse(start)),
+        last = Math.min(ends, Date.parse(end));
       if (last > first)
         result.push({
           start: new Date(first).toISOString(),

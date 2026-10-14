@@ -311,7 +311,7 @@ describe("iCalendar fidelity and recurrence semantics", () => {
     expect(changed).toContain("DTSTART;VALUE=DATE:20261016");
     expect(changed).toContain("DTEND;VALUE=DATE:20261017");
   });
-  test("requires a definition for TZID and rejects floating availability", () => {
+  test("requires explicit TZID definitions and defaults floating availability to Berlin", () => {
     expect(() =>
       calendarData(
         sample.replace(
@@ -331,13 +331,19 @@ describe("iCalendar fidelity and recurrence semantics", () => {
       .replace("RRULE:FREQ=DAILY;COUNT=3\r\n", "")
       .replaceAll("T100000Z", "T100000")
       .replaceAll("T110000Z", "T110000");
-    expect(() =>
+    expect(
       busyIntervals(
         [{ id: "one", etag: "", ics: floating }],
         "2026-10-14T00:00:00Z",
         "2026-10-15T00:00:00Z",
       ),
-    ).toThrow("floating");
+    ).toEqual([
+      {
+        eventId: "one",
+        start: "2026-10-14T08:00:00.000Z",
+        end: "2026-10-14T09:00:00.000Z",
+      },
+    ]);
   });
   test("computes clipped UTC busy intervals for expanded data", () => {
     const expanded = sample.replace("RRULE:FREQ=DAILY;COUNT=3\r\n", "");
@@ -605,4 +611,112 @@ test("calendar creation uses Workers-supported extended MKCOL with calendar reso
   expect(
     mock.mock.calls.some(([, init]) => init?.method === "MKCALENDAR"),
   ).toBe(false);
+});
+
+function policyFixture(timing: string): string {
+  return `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//synthetic//EN\r\nBEGIN:VEVENT\r\nUID:default-zone-test\r\nDTSTAMP:20261001T000000Z\r\n${timing}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+}
+test.each([
+  [
+    "DTSTART;VALUE=DATE:20260329\r\nDTEND;VALUE=DATE:20260330",
+    "2026-03-28T23:00:00.000Z",
+    "2026-03-29T22:00:00.000Z",
+  ],
+  [
+    "DTSTART;VALUE=DATE:20261025\r\nDTEND;VALUE=DATE:20261026",
+    "2026-10-24T22:00:00.000Z",
+    "2026-10-25T23:00:00.000Z",
+  ],
+  [
+    "DTSTART;VALUE=DATE:20261118",
+    "2026-11-17T23:00:00.000Z",
+    "2026-11-18T23:00:00.000Z",
+  ],
+  [
+    "DTSTART:20261118T100000\r\nDTEND:20261118T110000",
+    "2026-11-18T09:00:00.000Z",
+    "2026-11-18T10:00:00.000Z",
+  ],
+  [
+    "DTSTART:20260618T100000\r\nDTEND:20260618T110000",
+    "2026-06-18T08:00:00.000Z",
+    "2026-06-18T09:00:00.000Z",
+  ],
+  [
+    "DTSTART:20260329T023000\r\nDTEND:20260329T043000",
+    "2026-03-29T01:30:00.000Z",
+    "2026-03-29T02:30:00.000Z",
+  ],
+  [
+    "DTSTART:20261025T023000\r\nDTEND:20261025T033000",
+    "2026-10-25T00:30:00.000Z",
+    "2026-10-25T02:30:00.000Z",
+  ],
+  [
+    "DTSTART:20260328T120000\r\nDURATION:P1D",
+    "2026-03-28T11:00:00.000Z",
+    "2026-03-29T10:00:00.000Z",
+  ],
+  [
+    "DTSTART:20260328T120000\r\nDURATION:PT24H",
+    "2026-03-28T11:00:00.000Z",
+    "2026-03-29T11:00:00.000Z",
+  ],
+])("Berlin default correctly interprets %s", (timing, start, end) => {
+  const resource = { id: "fixture", etag: '"v1"', ics: policyFixture(timing) };
+  expect(
+    busyIntervals([resource], "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z"),
+  ).toEqual([{ eventId: "fixture", start, end }]);
+});
+test("Berlin all-day overlap clips to a UTC query before the calendar date", () => {
+  const resource = {
+    id: "fixture",
+    etag: '"v1"',
+    ics: policyFixture(
+      "DTSTART;VALUE=DATE:20261118\r\nDTEND;VALUE=DATE:20261119",
+    ),
+  };
+  expect(
+    busyIntervals([resource], "2026-11-17T23:15:00Z", "2026-11-17T23:45:00Z"),
+  ).toEqual([
+    {
+      eventId: "fixture",
+      start: "2026-11-17T23:15:00.000Z",
+      end: "2026-11-17T23:45:00.000Z",
+    },
+  ]);
+  const free = {
+    ...resource,
+    ics: resource.ics.replace("END:VEVENT", "TRANSP:TRANSPARENT\r\nEND:VEVENT"),
+  };
+  expect(
+    busyIntervals([free], "2026-11-17T23:15:00Z", "2026-11-17T23:45:00Z"),
+  ).toEqual([]);
+});
+test("availability discovery pads provider range to preserve Berlin boundary overlaps", async () => {
+  const mock = fixture();
+  await new CalDAV(env, mock as typeof fetch).query(
+    calendar,
+    "2026-11-17T23:15:00Z",
+    "2026-11-17T23:45:00Z",
+    undefined,
+    true,
+  );
+  const report = mock.mock.calls.find(
+    ([, init]) => init?.method === "REPORT",
+  )![1]!;
+  expect(String(report.body)).toContain(
+    '<c:expand start="20261116T231500Z" end="20261118T234500Z"/>',
+  );
+});
+
+test("inconsistent floating times across a DST gap cannot report false availability", () => {
+  const resource = {
+    id: "fixture",
+    etag: '"v1"',
+    ics: policyFixture("DTSTART:20260329T023000\r\nDTEND:20260329T030000"),
+  };
+  expect(() =>
+    busyIntervals([resource], "2026-03-29T00:00:00Z", "2026-03-30T00:00:00Z"),
+  ).toThrow("timezone policy");
 });
