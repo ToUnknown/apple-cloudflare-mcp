@@ -8,6 +8,7 @@ import { z } from "zod";
 import { CalDAV, CalendarError, boundedText, type Resource } from "./caldav";
 import {
   eventDetails,
+  suppressDefaultAlerts,
   uidOf,
   calendarData,
   updateEvent,
@@ -219,7 +220,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
     "events_create",
     {
       description:
-        "Create an event with title/start/end, optional allDay/timezone/description/location; local times default Europe/Berlin and are stored as UTC, all-day end is exclusive. For advanced recurrence use full VCALENDAR ics instead. Supply exactly one simple event or ics. Reuse the same UUID operationId and identical input on retries to prevent duplicates; inspect creation_receipt if uncertain.",
+        "Create an event with title/start/end, optional allDay/timezone/description/location; local times default Europe/Berlin and are stored as UTC, all-day end is exclusive. Automatic/default alerts are explicitly disabled unless supplied in ICS. For advanced recurrence or explicit reminders use full VCALENDAR ics instead. Supply exactly one simple event or ics. Reuse the same UUID operationId and identical input on retries to prevent duplicates; inspect creation_receipt if uncertain.",
       inputSchema: {
         calendarId: id,
         operationId: z.string().uuid(),
@@ -242,7 +243,9 @@ export function calendarServer(env: CalendarEnv): McpServer {
       safe(async () => {
         if (Boolean(args.ics) === Boolean(args.event))
           throw new CalendarError("Supply exactly one event or ics");
-        const data = args.ics ?? simpleEvent(args.event!, args.operationId);
+        const data = suppressDefaultAlerts(
+          args.ics ?? simpleEvent(args.event!, args.operationId),
+        );
         const uid = uidOf(data);
         calendarData(data);
         return createOnce(
