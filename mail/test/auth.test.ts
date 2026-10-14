@@ -144,6 +144,7 @@ test(
       assert.equal((await fetch(`${base}/authorize?${noPkce}`)).status, 400);
       const page = await fetch(`${base}/authorize?${params}`);
       assert.equal(page.status, 200);
+      assert.equal(page.headers.get("Referrer-Policy"), "same-origin");
       const html = await page.text();
       assert.doesNotMatch(html, /<script>/);
       assert.match(html, /&lt;script&gt;/);

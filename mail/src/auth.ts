@@ -54,7 +54,7 @@ export async function authorize(
       const headers = transaction.headers;
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.set("Cache-Control", "no-store");
-      headers.set("Referrer-Policy", "no-referrer");
+      headers.set("Referrer-Policy", "same-origin");
       headers.set(
         "Content-Security-Policy",
         "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",

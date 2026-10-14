@@ -108,6 +108,7 @@ async function oauthStart(env: CalendarEnv) {
   });
   const auth = await worker.fetch(request(`/authorize?${params}`), env, ctx);
   expect(auth.status).toBe(200);
+  expect(auth.headers.get("Referrer-Policy")).toBe("same-origin");
   const html = await auth.text();
   expect(html).toContain("&#60;synthetic client&#62;");
   const handle = html.match(/name="handle" value="([^"]+)"/)![1];

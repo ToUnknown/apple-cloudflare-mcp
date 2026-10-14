@@ -52,7 +52,7 @@ export async function authorization(
       const consent = await oauth.beginConsent(authRequest);
       consent.headers.set("Content-Type", "text/html; charset=utf-8");
       consent.headers.set("Cache-Control", "no-store");
-      consent.headers.set("Referrer-Policy", "no-referrer");
+      consent.headers.set("Referrer-Policy", "same-origin");
       consent.headers.set(
         "Content-Security-Policy",
         "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",

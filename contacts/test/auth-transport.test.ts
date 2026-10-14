@@ -50,6 +50,7 @@ async function login(clientId: string) {
     url.searchParams.set(k, v);
   const response = await dispatch(url);
   expect(response.status).toBe(200);
+  expect(response.headers.get("Referrer-Policy")).toBe("same-origin");
   const html = await response.text();
   const handle = html.match(/name="handle" value="([^"]+)"/)?.[1];
   expect(handle).toBeTruthy();

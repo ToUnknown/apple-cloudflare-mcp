@@ -65,7 +65,7 @@ export async function authorize(
         "Content-Security-Policy",
         "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
       );
-      headers.set("Referrer-Policy", "no-referrer");
+      headers.set("Referrer-Policy", "same-origin");
       return new Response(
         `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Approve Contacts access</title><h1>Approve iCloud Contacts access</h1><p>${html(client.clientName)} requests permission to read, create, edit and permanently delete this owner's contacts and lists.</p><p>Redirect: ${html(client.redirectHost)}${client.redirectIsLoopback ? " (local application)" : ""}</p><p>Scope: contacts</p><form method="post" action="/authorize"><input type="hidden" name="handle" value="${html(transaction.handle)}"><label>Owner password <input type="password" name="password" required autocomplete="current-password" maxlength="1024"></label><button name="decision" value="approve">Approve access</button><button name="decision" value="deny" formnovalidate>Decline</button></form></html>`,
         { headers },
