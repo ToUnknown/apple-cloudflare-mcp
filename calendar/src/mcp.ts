@@ -220,7 +220,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
     "events_create",
     {
       description:
-        "Create an event with title/start/end, optional allDay/timezone/description/location; local times default Europe/Berlin and are stored as UTC, all-day end is exclusive. Automatic/default alerts are explicitly disabled unless supplied in ICS. For advanced recurrence or explicit reminders use full VCALENDAR ics instead. Supply exactly one simple event or ics. Reuse the same UUID operationId and identical input on retries to prevent duplicates; inspect creation_receipt if uncertain.",
+        "Create an event with title/start/end, optional allDay/timezone/description/location; local times default Europe/Berlin and are stored as UTC, all-day end is exclusive. Without explicit reminders, creation adds an Apple no-alert marker. For advanced recurrence or requested reminders use full VCALENDAR ics. Add only reminders the user requests; never add an extra 10-minute alarm. Apple clients may show an additional default alert when explicit alarms are present; this is not guaranteed and must not replace a requested reminder. Supply exactly one simple event or ics. Reuse the same UUID operationId and identical input on retries to prevent duplicates; inspect creation_receipt if uncertain.",
       inputSchema: {
         calendarId: id,
         operationId: z.string().uuid(),
@@ -304,7 +304,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
     "events_import",
     {
       description:
-        "Replace a complete series from ICS, including exceptions and unknown extensions. Requires same UID and an ETag. Read/export first; entire resource is replaced.",
+        "Replace a complete series from ICS, including exceptions and unknown extensions. Requires same UID and an ETag. Read/export first; entire resource is replaced. Preserve unrelated alarms and add only requested reminders, never an extra 10-minute default. Apple clients may show an additional default alert; do not rely on it instead of a requested reminder.",
       inputSchema: { eventId: id, etag, ics },
       annotations: destructive,
     },
