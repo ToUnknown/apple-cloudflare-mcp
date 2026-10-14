@@ -154,12 +154,14 @@ export class CalDAV {
   ): Promise<{ status: number; text: string; headers: Headers; url: string }> {
     if (!this.env.ICLOUD_USERNAME || !this.env.ICLOUD_APP_PASSWORD)
       throw new CalendarError("iCloud credentials are not configured");
+    // Workers fetch is a global capability; do not bind it to this client.
+    const fetchRequest = this.fetcher;
     let url = appleURL(href);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
       for (let redirects = 0; redirects <= 3; redirects++) {
-        const response = await this.fetcher(url.href, {
+        const response = await fetchRequest(url.href, {
           method,
           body,
           headers: {

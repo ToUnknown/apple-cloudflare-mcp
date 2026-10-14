@@ -161,12 +161,14 @@ export class CardDAV {
     body?: string,
     headers: Record<string, string> = {},
   ): Promise<{ response: Response; body: string; url: string }> {
+    // Workers fetch is a global capability; do not bind it to this client.
+    const fetchRequest = this.http;
     let url = appleURL(raw);
     const signal = AbortSignal.timeout(20_000);
     for (let hop = 0; hop < 5; hop++) {
       let response: Response;
       try {
-        response = await this.http(url.href, {
+        response = await fetchRequest(url.href, {
           method,
           redirect: "manual",
           signal,
