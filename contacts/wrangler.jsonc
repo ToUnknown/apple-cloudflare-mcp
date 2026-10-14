@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "icloud-contacts-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-14",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  "vars": {
+    "PUBLIC_ORIGIN": "https://icloud-contacts-mcp.REPLACE.workers.dev",
+  },
+  "observability": { "enabled": false },
+}

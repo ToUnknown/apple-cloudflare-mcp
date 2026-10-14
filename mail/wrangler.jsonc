@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "icloud-mail-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-14",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  "durable_objects": {
+    "bindings": [{ "name": "SEND_RECEIPTS", "class_name": "SendReceipt" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SendReceipt"] }],
+  "vars": {
+    "PUBLIC_ORIGIN": "https://icloud-mail-mcp.YOUR_SUBDOMAIN.workers.dev",
+  },
+  "observability": { "enabled": false },
+}

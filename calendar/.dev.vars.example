@@ -1,0 +1,5 @@
+# Dummy values only. Copy to .dev.vars locally; real credentials belong in Worker secrets.
+ICLOUD_USERNAME="owner@example.invalid"
+ICLOUD_APP_PASSWORD="aaaa-bbbb-cccc-dddd"
+OWNER_PASSWORD="replace-with-a-long-unique-owner-password"
+PUBLIC_ORIGIN="https://localhost:8787"

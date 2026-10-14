@@ -1,0 +1,30 @@
+{
+  "name": "icloud-contacts-cloudflare-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "wrangler types && tsc --noEmit",
+    "test": "vitest run",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev --local --local-protocol https",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.3",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "fast-xml-parser": "^5.3.6",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "miniflare": "^5.20261012.0-beta",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.4",
+    "wrangler": "4.151.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

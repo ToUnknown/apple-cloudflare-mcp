@@ -1,0 +1,8 @@
+# Dummy values only. Use wrangler secret put for deployment.
+ICLOUD_USERNAME=owner@example.invalid
+ICLOUD_APP_PASSWORD=dummy-app-specific-password
+OWNER_PASSWORD=replace-with-at-least-32-random-characters
+# Optional sender allowlist (all addresses must already belong to this iCloud account).
+MAIL_IDENTITIES=owner@example.invalid,alias@example.invalid,me@custom.invalid
+# Preferred sender; must be listed above. Defaults to ICLOUD_USERNAME.
+MAIL_FROM=owner@example.invalid

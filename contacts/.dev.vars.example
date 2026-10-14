@@ -1,0 +1,4 @@
+ICLOUD_USERNAME=owner@example.invalid
+ICLOUD_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
+OWNER_PASSWORD=replace-with-a-long-random-password
+PUBLIC_ORIGIN=https://localhost:8787
