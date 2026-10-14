@@ -500,23 +500,3 @@ export function validateReply(ics: string): string {
     );
   return String(events[0].getFirstPropertyValue("attendee"));
 }
-
-// Apple's default-alarm handling leaves events with an explicit VALARM alone.
-// ACTION:NONE is the no-alert marker; the historical absolute trigger cannot
-// become an event-relative reminder. Preserve any alarms explicitly supplied.
-export function suppressDefaultAlerts(ics: string): string {
-  const calendar = calendarData(ics);
-  let changed = false;
-  for (const event of calendar.getAllSubcomponents("vevent")) {
-    if (event.getAllSubcomponents("valarm").length) continue;
-    event.addSubcomponent(
-      new ICAL.Component(
-        ICAL.parse(
-          "BEGIN:VALARM\r\nACTION:NONE\r\nTRIGGER;VALUE=DATE-TIME:19760401T005545Z\r\nEND:VALARM\r\n",
-        ),
-      ),
-    );
-    changed = true;
-  }
-  return changed ? calendar.toString() : ics;
-}
