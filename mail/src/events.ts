@@ -254,7 +254,9 @@ export class MailEventEngine {
       await this.d.remove(id);
       return;
     }
+    let changed = false;
     if (state.rotationUntil && state.rotationUntil <= this.now()) {
+      changed = true;
       delete state.previousSecret;
       delete state.rotationUntil;
     }
@@ -262,6 +264,8 @@ export class MailEventEngine {
     if (!state.pending.length) {
       const previous = state.position;
       const scan = await this.d.scan(previous);
+      changed ||= previous.uidValidity !== scan.position.uidValidity ||
+        previous.nextUid !== scan.position.nextUid;
       state.position = scan.position;
       if (!scan.reset)
         state.pending = scan.messages
@@ -279,8 +283,11 @@ export class MailEventEngine {
           }));
       if (state.pending.length > 10)
         throw new Error("Arrival batch exceeded bound");
-      await this.d.save(id, state);
+      changed ||= state.pending.length > 0;
     }
+    // Idle polls do not rewrite identical encrypted subscription state.
+    // Rotation cleanup is persisted even while an outbox retry is waiting.
+    if (changed) await this.d.save(id, state);
     for (let sent = 0; sent < 3 && state.pending.length; sent++) {
       const pending = state.pending[0];
       if (pending.due > this.now()) break;

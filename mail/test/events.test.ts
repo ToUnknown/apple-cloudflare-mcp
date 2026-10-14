@@ -335,3 +335,28 @@ test("stored subscriptions are encrypted and bound to their identity", async () 
   );
   await assert.rejects(seal(state, undefined, "sub-1"));
 });
+
+
+test("idle checkpoints skip writes; progress, UID resets and rotation cleanup persist", async () => {
+  const h = harness();
+  const { id } = await h.engine().subscribe(principal, input);
+  let writes = 0;
+  const save = h.deps.save;
+  h.deps.save = async (key, state) => { writes++; await save(key, state); };
+  await h.engine().tick(id); // Advance the baseline from UID 10 to 20.
+  assert.equal(writes, 1);
+  for (let i = 0; i < 5; i++) await h.engine().tick(id);
+  assert.equal(writes, 1);
+  h.reset();
+  await h.engine().tick(id);
+  assert.equal(writes, 2);
+  assert.equal(h.db.get(id)!.position.uidValidity, "2");
+  const state = h.db.get(id)!;
+  state.previousSecret = secret;
+  state.rotationUntil = h.now() - 1;
+  await h.engine().tick(id);
+  assert.equal(writes, 3);
+  assert.equal(h.db.get(id)!.previousSecret, undefined);
+  await h.engine().tick(id);
+  assert.equal(writes, 3);
+});
