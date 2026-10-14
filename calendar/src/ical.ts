@@ -71,6 +71,34 @@ export function calendarData(ics: string): Component {
   }
   return calendar;
 }
+export function filterByTitle(
+  resources: Resource[],
+  text?: string,
+): Resource[] {
+  if (text === undefined) return resources;
+  const normalize = (value: string) => value.normalize("NFC").toUpperCase();
+  const needle = normalize(text);
+  return resources.filter((resource) => {
+    let calendar: Component;
+    try {
+      calendar = new ICAL.Component(ICAL.parse(resource.ics));
+    } catch {
+      throw new CalendarError(
+        "Cannot verify title matches: invalid calendar data",
+      );
+    }
+    const events = calendar.getAllSubcomponents("vevent");
+    if (calendar.name !== "vcalendar" || !events.length)
+      throw new CalendarError(
+        "Cannot verify title matches: calendar has no events",
+      );
+    // Decode folded/escaped text through ICAL; never match descriptions or alarm titles.
+    return events.some((event) => {
+      const title = event.getFirstPropertyValue("summary");
+      return typeof title === "string" && normalize(title).includes(needle);
+    });
+  });
+}
 export function eventDetails(resource: Resource): unknown {
   let calendar: Component;
   try {

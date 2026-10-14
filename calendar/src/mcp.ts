@@ -4,6 +4,7 @@ import { z } from "zod";
 import { CalDAV, CalendarError, boundedText, type Resource } from "./caldav";
 import {
   eventDetails,
+  filterByTitle,
   uidOf,
   calendarData,
   updateEvent,
@@ -100,7 +101,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
     "events_search",
     {
       description:
-        "Find event resources intersecting a date range; optional case-insensitive SUMMARY text. Returns full ICS series and exceptions, NOT expanded occurrences.",
+        "Find event resources intersecting a date range; optional literal case-insensitive title substring, verified by this server. A master or recurrence-exception title can match; returns the full ICS series, NOT expanded occurrences.",
       inputSchema: {
         calendarId: id,
         ...range,
@@ -111,9 +112,11 @@ export function calendarServer(env: CalendarEnv): McpServer {
     ({ calendarId, start, end, text }) =>
       safe(async () => ({
         expanded: false,
-        resources: (await dav.query(calendarId, start, end, text)).map(
-          eventDetails,
-        ),
+        // Fetch the bounded date range without relying on iCloud's text filtering.
+        resources: filterByTitle(
+          await dav.query(calendarId, start, end),
+          text,
+        ).map(eventDetails),
       })),
   );
   server.registerTool(

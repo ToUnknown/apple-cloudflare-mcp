@@ -1,3 +1,7 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { calendarServer } from "../src/mcp";
+import type { CalendarEnv } from "../src/env";
 import { describe, test, expect, vi } from "vitest";
 import {
   CalDAV,
@@ -8,6 +12,7 @@ import {
 } from "../src/caldav";
 import {
   calendarData,
+  filterByTitle,
   eventDetails,
   updateEvent,
   excludeOccurrence,
@@ -719,4 +724,96 @@ test("inconsistent floating times across a DST gap cannot report false availabil
   expect(() =>
     busyIntervals([resource], "2026-03-29T00:00:00Z", "2026-03-30T00:00:00Z"),
   ).toThrow("timezone policy");
+});
+
+test("title filtering rejects unrelated events and does not search descriptions or alarms", () => {
+  const one = {
+    id: "one",
+    etag: '"v1"',
+    ics: sample.replace("SUMMARY:Test", "SUMMARY:Dentist appointment"),
+  };
+  const two = {
+    id: "two",
+    etag: '"v2"',
+    ics: sample.replace(
+      "SUMMARY:Test",
+      "SUMMARY:Team meeting\r\nDESCRIPTION:Dentist appointment\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT5M\r\nSUMMARY:Dentist\r\nEND:VALARM",
+    ),
+  };
+  expect(filterByTitle([one, two], "DENTIST")).toEqual([one]);
+  expect(filterByTitle([one, two], "nonexistent-f58c8ef7")).toEqual([]);
+  expect(filterByTitle([one, two])).toEqual([one, two]);
+  expect(
+    filterByTitle(
+      [{ ...one, ics: sample.replace("SUMMARY:Test\r\n", "") }],
+      "Test",
+    ),
+  ).toEqual([]);
+});
+test.each([
+  ["SUMMARY:Über Straße", "ÜBER STRASSE"],
+  ["SUMMARY:Лікар у Києві", "ЛІКАР"],
+  ["SUMMARY:Café", "Cafe\u0301"],
+  ["SUMMARY:Dentist app\r\n ointment", "appointment"],
+  ["SUMMARY:Plan\\, review\\; next\\nstep", "review; next\nstep"],
+  ["SUMMARY:[Dentist].*", "[dentist].*"],
+])("title text is decoded and matched literally: %s", (summary, query) => {
+  const r = {
+    id: "one",
+    etag: '"v1"',
+    ics: sample.replace("SUMMARY:Test", summary),
+  };
+  expect(filterByTitle([r], query)).toEqual([r]);
+});
+test("a matching recurrence exception returns its complete series unchanged", () => {
+  const changed = updateEvent(
+    sample,
+    { summary: "Dentist exception" },
+    "occurrence",
+    "2026-10-15T10:00:00Z",
+  );
+  const r = { id: "one", etag: '"v1"', ics: changed };
+  expect(filterByTitle([r], "dentist")).toEqual([r]);
+  expect(filterByTitle([r], "Test")).toEqual([r]);
+});
+test("malformed provider data fails closed instead of fabricating search results", () => {
+  expect(() =>
+    filterByTitle([{ id: "one", etag: '"v1"', ics: "not ical" }], "dentist"),
+  ).toThrow("Cannot verify title matches");
+});
+test("MCP search verifies titles even when the provider returns unfiltered resources", async () => {
+  const mock = fixture();
+  vi.stubGlobal("fetch", mock);
+  const server = calendarServer(env as CalendarEnv);
+  const client = new Client({ name: "synthetic", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(a);
+    await client.connect(b);
+    const search = async (text?: string) => {
+      const reply = await client.callTool({
+        name: "events_search",
+        arguments: {
+          calendarId: calendar,
+          start: "2026-10-14T00:00:00Z",
+          end: "2026-10-20T00:00:00Z",
+          ...(text === undefined ? {} : { text }),
+        },
+      });
+      expect(reply.isError).not.toBe(true);
+      return JSON.parse((reply.content as { text: string }[])[0].text)
+        .resources;
+    };
+    expect(await search("No-such-title")).toEqual([]);
+    expect(await search("tEsT")).toHaveLength(1);
+    expect(await search()).toHaveLength(1);
+    for (const [, init] of mock.mock.calls.filter(
+      ([, init]) => init?.method === "REPORT",
+    ))
+      expect(String(init?.body)).not.toContain("text-match");
+  } finally {
+    await client.close();
+    await server.close();
+    vi.unstubAllGlobals();
+  }
 });

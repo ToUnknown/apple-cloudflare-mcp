@@ -27,7 +27,7 @@ For local development, copy `.dev.vars.example` to the ignored `.dev.vars`, repl
 | Tools | Behavior |
 | --- | --- |
 | `calendars_list`, `calendars_create`, `calendars_rename` | Discover IDs/privileges/reports; create via extended MKCOL; rename via PROPPATCH with checked property status. iCloud may refuse management methods. |
-| `events_search`, `events_read` | Bounded date-range and optional SUMMARY text search; full stored ICS, ETag, series and exceptions. Search returns matching resources, **not expanded occurrences**. |
+| `events_search`, `events_read` | Bounded date-range and optional literal, case-insensitive title substring verified locally, including Unicode/folded titles. A master or exception title can match; returns full stored ICS, ETag, series and exceptions. Search returns matching resources, **not expanded occurrences**. |
 | `events_create`, `events_update` | Create from complete ICS or patch summary/description/location/times/recurrence rule. Explicit `series` or `occurrence` scope. |
 | `events_import`, `events_export` | Replace one complete UID/series with ETag protection, or export exact stored ICS. Import preserves UID; creation chooses a new resource path. |
 | `events_move`, `events_delete` | Atomic MOVE between event calendars without overwrite; delete a series or exclude one occurrence. Unsupported destinations are rejected without copy/delete fallback. |
