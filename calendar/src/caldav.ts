@@ -415,6 +415,48 @@ export class CalDAV {
     return result;
   }
 
+  // iCloud's time-range selection can omit a series whose exception was moved
+  // beyond the original recurrence span. Read a bounded complete inventory so
+  // detached exceptions are never dependent on that selection.
+  async searchOriginals(calendarId: string): Promise<Resource[]> {
+    await this.calendar(calendarId);
+    const response = await this.request(
+      calendarId,
+      "REPORT",
+      `<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"/></c:comp-filter></c:filter></c:calendar-query>`,
+      { Depth: "1" },
+    );
+    const parent = appleURL(calendarId);
+    const prefix = parent.pathname.endsWith("/")
+      ? parent.pathname
+      : `${parent.pathname}/`;
+    const seen = new Set<string>();
+    return parseDav(response.text).flatMap((row) => {
+      const url = appleURL(row.href, response.url);
+      // iCloud includes the collection itself with an ETag but no event data.
+      if (
+        url.origin === parent.origin &&
+        (url.pathname === parent.pathname || url.pathname === prefix)
+      )
+        return [];
+      if (
+        url.origin !== parent.origin ||
+        !url.pathname.startsWith(prefix) ||
+        url.pathname.slice(prefix.length).includes("/") ||
+        seen.has(url.href)
+      )
+        throw new CalendarError(
+          "Unexpected or duplicate calendar search resource",
+        );
+      seen.add(url.href);
+      const etag = stringValue(row.props.getetag),
+        ics = stringValue(row.props["calendar-data"]);
+      strongEtag(etag);
+      if (!ics) throw new CalendarError("Incomplete calendar search inventory");
+      return [{ id: url.href, etag, ics }];
+    });
+  }
+
   async query(
     calendarId: string,
     start: string,

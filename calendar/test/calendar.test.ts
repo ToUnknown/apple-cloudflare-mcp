@@ -783,7 +783,17 @@ test("malformed provider data fails closed instead of fabricating search results
 });
 test("MCP search verifies titles even when the provider returns unfiltered resources", async () => {
   const expanded = sample.replace("RRULE:FREQ=DAILY;COUNT=3\r\n", "");
-  const mock = fixture((_, init) => init.method === "REPORT" && String(init.body).includes("<c:expand") ? new Response(xml(`<d:getetag>"v1"</d:getetag><c:calendar-data>${escape(expanded)}</c:calendar-data>`, "/u/cal/event-one.ics"), {status:207}) : undefined);
+  const mock = fixture((_, init) =>
+    init.method === "REPORT" && String(init.body).includes("<c:expand")
+      ? new Response(
+          xml(
+            `<d:getetag>"v1"</d:getetag><c:calendar-data>${escape(expanded)}</c:calendar-data>`,
+            "/u/cal/event-one.ics",
+          ),
+          { status: 207 },
+        )
+      : undefined,
+  );
   vi.stubGlobal("fetch", mock);
   const server = calendarServer(env as CalendarEnv);
   const client = new Client({ name: "synthetic", version: "1" });
@@ -817,4 +827,103 @@ test("MCP search verifies titles even when the provider returns unfiltered resou
     await server.close();
     vi.unstubAllGlobals();
   }
+});
+
+test("MCP narrow search scans originals without a range and recovers omitted moved exceptions", async () => {
+  const original = updateEvent(
+    sample,
+    {
+      start: "2026-12-16T12:00:00Z",
+      end: "2026-12-16T12:30:00Z",
+      summary: "Moved",
+    },
+    "occurrence",
+    "2026-10-15T10:00:00Z",
+  );
+  const mock = fixture((_, init) => {
+    if (init.method !== "REPORT") return undefined;
+    const body = String(init.body);
+    if (body.includes("time-range"))
+      return new Response('<d:multistatus xmlns:d="DAV:"/>', { status: 207 });
+    if (body.includes("calendar-query"))
+      return new Response(
+        xml(
+          `<d:getetag>"v1"</d:getetag><c:calendar-data>${escape(original)}</c:calendar-data>`,
+          "/u/cal/event-one.ics",
+        ),
+        { status: 207 },
+      );
+    return undefined;
+  });
+  vi.stubGlobal("fetch", mock);
+  const server = calendarServer(env as CalendarEnv);
+  const client = new Client({ name: "regression", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(a);
+    await client.connect(b);
+    const reply = await client.callTool({
+      name: "events_search",
+      arguments: {
+        calendarId: calendar,
+        start: "2026-12-16T00:00:00Z",
+        end: "2026-12-17T00:00:00Z",
+        text: "mOvEd",
+      },
+    });
+    expect(reply.isError).not.toBe(true);
+    const data = JSON.parse((reply.content as { text: string }[])[0].text);
+    expect(data.resources).toHaveLength(1);
+    expect(data.resources[0].events).toHaveLength(1);
+    expect(data.resources[0].events[0].start).toBe("2026-12-16T12:00:00.000Z");
+    expect(
+      mock.mock.calls.some(([, init]) =>
+        String(init?.body).includes('name="VEVENT"/>'),
+      ),
+    ).toBe(true);
+    const availability = await client.callTool({
+      name: "availability",
+      arguments: {
+        calendarIds: [calendar],
+        start: "2026-12-16T00:00:00Z",
+        end: "2026-12-17T00:00:00Z",
+      },
+    });
+    expect(availability.isError).not.toBe(true);
+    expect(
+      JSON.parse((availability.content as { text: string }[])[0].text).busy,
+    ).toEqual([
+      {
+        start: "2026-12-16T12:00:00.000Z",
+        end: "2026-12-16T12:30:00.000Z",
+        eventId: calendar + "event-one.ics",
+      },
+    ]);
+  } finally {
+    await client.close();
+    await server.close();
+    vi.unstubAllGlobals();
+  }
+});
+
+test("search inventory ignores only the collection metadata row, never incomplete event rows", async () => {
+  let missing = false;
+  const mock = fixture((_, init) => {
+    if (init.method !== "REPORT") return undefined;
+    let data = xml(
+      `<d:getetag>"v1"</d:getetag>${missing ? "" : `<c:calendar-data>${escape(sample)}</c:calendar-data>`}`,
+      "/u/cal/event-one.ics",
+    );
+    data = data.replace(
+      "<d:response>",
+      '<d:response><d:href>/u/cal/</d:href><d:propstat><d:prop><d:getetag>"collection"</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response><d:response>',
+    );
+    return new Response(data, { status: 207 });
+  });
+  const dav = new CalDAV(env as CalendarEnv, mock);
+  expect(await dav.searchOriginals(calendar)).toHaveLength(1);
+  missing = true;
+  await expect(dav.searchOriginals(calendar)).rejects.toThrow(
+    "Incomplete calendar search inventory",
+  );
 });

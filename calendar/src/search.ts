@@ -57,6 +57,91 @@ function rules(master: Component) {
 function instant(ms: number) {
   return new Date(ms).toISOString();
 }
+// Expanded DATE identities are sometimes emitted by iCloud as UTC midnight.
+// They are date labels, not instants to convert into a different timezone.
+function identity(time: Time, masterStart: Time): Time {
+  if (masterStart.isDate) {
+    if (!time.isDate && (time.hour || time.minute || time.second))
+      throw new CalendarError("Invalid all-day occurrence identity");
+    return ICAL.Time.fromDateString(time.toString().slice(0, 10));
+  }
+  if (time.isDate) throw new CalendarError("Invalid timed occurrence identity");
+  return masterStart.zone.tzid === "floating"
+    ? time
+    : time.convertToZone(masterStart.zone);
+}
+
+export function includeStoredExceptions(
+  expanded: Resource[],
+  originals: Resource[],
+): Resource[] {
+  const byId = new Map(expanded.map((r) => [r.id, r]));
+  const originalIds = new Set(originals.map((r) => r.id));
+  if (
+    byId.size !== expanded.length ||
+    originalIds.size !== originals.length ||
+    expanded.some((r) => !originalIds.has(r.id))
+  )
+    throw new CalendarError(
+      "Incomplete or duplicate search inventory; retry search",
+    );
+  let exceptionCount = 0;
+  return originals.flatMap((original) => {
+    const found = byId.get(original.id);
+    if (found && found.etag !== original.etag)
+      throw new CalendarError("ETag conflict during search; retry search");
+    const full = parse(original.ics);
+    const components = full.getAllSubcomponents("vevent");
+    const master = components.find((c) => !c.hasProperty("recurrence-id"));
+    if (!master)
+      throw new CalendarError("Search metadata requires a series master");
+    const start = new ICAL.Event(master).startDate;
+    const exceptions = components.filter((c) => c.hasProperty("recurrence-id"));
+    if (!found && !exceptions.length) return [];
+    const calendar = found
+      ? parse(found.ics)
+      : new ICAL.Component(["vcalendar", [], []]);
+    for (const definition of full.getAllSubcomponents("vtimezone"))
+      if (
+        !calendar.getTimeZoneByID(
+          String(definition.getFirstPropertyValue("tzid")),
+        )
+      )
+        calendar.addSubcomponent(
+          new ICAL.Component(JSON.parse(JSON.stringify(definition.toJSON()))),
+        );
+    const ids = new Set<string>();
+    for (const exception of exceptions) {
+      if (++exceptionCount > 1000)
+        throw new CalendarError(
+          "Too many stored exceptions for reliable search",
+        );
+      if (exception.getFirstProperty("recurrence-id")?.getParameter("range"))
+        throw new CalendarError(
+          "Search does not support RANGE recurrence exceptions",
+        );
+      const id = identity(
+        exception.getFirstPropertyValue("recurrence-id") as Time,
+        start,
+      ).toString();
+      if (ids.has(id))
+        throw new CalendarError("Duplicate recurrence exception identity");
+      ids.add(id);
+      for (const item of calendar.getAllSubcomponents("vevent")) {
+        const rid = item.getFirstPropertyValue("recurrence-id") as Time | null;
+        if (rid && identity(rid, start).toString() === id)
+          calendar.removeSubcomponent(item);
+      }
+      if (exception.getFirstPropertyValue("status") !== "CANCELLED")
+        calendar.addSubcomponent(
+          new ICAL.Component(JSON.parse(JSON.stringify(exception.toJSON()))),
+        );
+    }
+    if (!calendar.getAllSubcomponents("vevent").length) return [];
+    return [{ ...original, ics: calendar.toString() }];
+  });
+}
+
 export function occurrenceSearch(
   expanded: Resource[],
   originals: Resource[],
@@ -70,7 +155,7 @@ export function occurrenceSearch(
   const lower = Date.parse(start),
     upper = Date.parse(end);
   const needle = text?.normalize("NFC").toUpperCase();
-  for (const resource of expanded) {
+  for (const resource of includeStoredExceptions(expanded, originals)) {
     const original = source.get(resource.id);
     if (!original || original.etag !== resource.etag)
       throw new CalendarError("ETag conflict during search; retry search");
@@ -165,8 +250,7 @@ export function occurrenceSearch(
         rid = masterEvent.startDate;
       }
       // RFC expansion can convert RECURRENCE-ID to UTC. Restore master-local identity for edits.
-      if (rid && !rid.isDate && masterEvent.startDate.zone.tzid !== "floating")
-        rid = rid.convertToZone(masterEvent.startDate.zone);
+      if (rid) rid = identity(rid, masterEvent.startDate);
       events.push({
         summary,
         start: event.startDate.isDate

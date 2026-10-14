@@ -1,4 +1,4 @@
-import { occurrenceSearch } from "./search";
+import { occurrenceSearch, includeStoredExceptions } from "./search";
 import { simpleEvent } from "./simple";
 import { createOnce, publicReceipt, OperationError } from "./creation";
 import { actionableError } from "./errors";
@@ -13,7 +13,6 @@ import {
   updateEvent,
   excludeOccurrence,
   busyIntervals,
-  expandedTimezones,
   DEFAULT_TIMEZONE,
   validateReply,
 } from "./ical";
@@ -201,7 +200,7 @@ export function calendarServer(env: CalendarEnv): McpServer {
           undefined,
           true,
         );
-        const originals = await dav.readMany(calendarId, expanded);
+        const originals = await dav.searchOriginals(calendarId);
         return occurrenceSearch(expanded, originals, start, end, text);
       }, false),
   );
@@ -383,17 +382,24 @@ export function calendarServer(env: CalendarEnv): McpServer {
     ({ calendarIds, start, end }) =>
       safe(async () => {
         const resources: Resource[] = [];
-        for (const calendar of new Set(calendarIds))
-          resources.push(
-            ...(await dav.query(calendar, start, end, undefined, true)),
-          );
-        return {
-          calendarIds,
-          busy: busyIntervals(
-            await expandedTimezones(resources, (id) => dav.read(id)),
+        for (const calendar of new Set(calendarIds)) {
+          const expanded = await dav.query(
+            calendar,
             start,
             end,
-          ),
+            undefined,
+            true,
+          );
+          resources.push(
+            ...includeStoredExceptions(
+              expanded,
+              await dav.searchOriginals(calendar),
+            ),
+          );
+        }
+        return {
+          calendarIds,
+          busy: busyIntervals(resources, start, end),
           start,
           end,
           scope: "accessible calendars only",
