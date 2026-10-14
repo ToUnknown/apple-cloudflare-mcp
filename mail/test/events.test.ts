@@ -11,6 +11,8 @@ import {
 } from "../src/events";
 import {
   callbackUrl,
+  validatedAddresses,
+  chatgptPost,
   publicAddress,
   signingKey,
   signedPost,
@@ -359,4 +361,30 @@ test("idle checkpoints skip writes; progress, UID resets and rotation cleanup pe
   assert.equal(h.db.get(id)!.previousSecret, undefined);
   await h.engine().tick(id);
   assert.equal(writes, 3);
+});
+
+
+test("Workerd DNS CNAME records do not invalidate public addresses; private IPs still fail closed", () => {
+  assert.deepEqual(validatedAddresses(["callback.edge.example.", "8.8.8.8", "callback.edge.example.", "2001:4860:4860::8888"]), ["8.8.8.8", "2001:4860:4860::8888"]);
+  assert.throws(() => validatedAddresses(["alias.example."]));
+  assert.throws(() => validatedAddresses(["alias.example.", "8.8.8.8", "127.0.0.1"]));
+  assert.throws(() => validatedAddresses(["8.8.8.8", "::ffff:10.0.0.1"]));
+  assert.throws(() => validatedAddresses([]));
+});
+
+
+test("ChatGPT HTTPS transport restricts the exact origin, preserves bytes, blocks redirects and bounds responses", async () => {
+  const dest = new URL("https://connectors.api.openai.com/example");
+  let calls = 0;
+  const send = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls++; assert.equal(url, dest.href); assert.equal(init?.redirect, "manual");
+    assert.equal(init?.body, '{"challenge":"test"}');
+    assert.deepEqual(init?.headers, {"webhook-signature":"test"});
+    return new Response('{"challenge":"test"}', {status:200});
+  }) as typeof fetch;
+  assert.equal((await chatgptPost(dest, '{"challenge":"test"}', {"webhook-signature":"test"}, send)).status, 200);
+  await assert.rejects(chatgptPost(new URL("https://connectors.api.openai.com.attacker.example/"), "", {}, send));
+  assert.equal(calls, 1);
+  await assert.rejects(chatgptPost(dest,"",{}, (async()=>new Response(null,{status:302,headers:{location:"http://127.0.0.1/"}})) as typeof fetch));
+  await assert.rejects(chatgptPost(dest,"",{}, (async()=>new Response("x".repeat(16385))) as typeof fetch));
 });

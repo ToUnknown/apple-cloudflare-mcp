@@ -71,16 +71,16 @@ export type WebhookPost = (
 ) => Promise<WebhookResult>;
 // https.request in Workers wraps fetch and cannot pin DNS or set servername.
 // Connect directly to a validated address with TLS verification for the original host.
-export const pinnedPost: WebhookPost = async (url, body, headers) => {
+export async function resolveCallbackAddresses(hostname: string): Promise<string[]> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const resolve = Promise.allSettled([
-    resolve4(url.hostname),
-    resolve6(url.hostname),
+    resolve4(hostname),
+    resolve6(hostname),
   ]);
   const addresses = await Promise.race([
-    resolve.then((results) =>
-      results.flatMap((r) => (r.status === "fulfilled" ? r.value : [])),
-    ),
+    resolve.then((results) => {
+      return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+    }),
     new Promise<never>((_, reject) => {
       timer = setTimeout(
         () => reject(new EventError(-32015, "Callback timeout", "timeout")),
@@ -88,12 +88,22 @@ export const pinnedPost: WebhookPost = async (url, body, headers) => {
       );
     }),
   ]).finally(() => clearTimeout(timer));
+  return validatedAddresses(addresses);
+}
+export function validatedAddresses(records: string[]): string[] {
+  // Workerd resolve4/resolve6 can include CNAME answers. Only IP records
+  // are connection candidates; validate every IP, never silently drop private IPs.
+  const addresses = [...new Set(records.filter(record => ipaddr.isValid(record)))];
   if (!addresses.length || addresses.some((a) => !publicAddress(a)))
     throw new EventError(
       -32015,
       "Callback address is not public",
       "invalid_url",
     );
+  return addresses;
+}
+export const pinnedPost: WebhookPost = async (url, body, headers) => {
+  const addresses = await resolveCallbackAddresses(url.hostname);
   return new Promise((resolve, reject) => {
     const socket = connect({
       host: addresses[0],
@@ -101,7 +111,6 @@ export const pinnedPost: WebhookPost = async (url, body, headers) => {
       servername: url.hostname,
       rejectUnauthorized: true,
       minVersion: "TLSv1.2",
-      ALPNProtocols: ["http/1.1"],
     });
     const chunks: Buffer[] = [];
     let length = 0;
@@ -157,6 +166,47 @@ export const pinnedPost: WebhookPost = async (url, body, headers) => {
     });
   });
 };
+// This observed OpenAI-owned endpoint is behind Cloudflare. Workers block raw
+// TCP to Cloudflare IPs. Only this exact trusted origin uses platform HTTPS;
+// arbitrary callback origins retain pinned-IP TLS. Never follow redirects.
+export const CHATGPT_CALLBACK_ORIGIN = "https://connectors.api.openai.com";
+export async function chatgptPost(
+  url: URL, body: string, headers: Record<string, string>,
+  send: typeof fetch = fetch,
+): Promise<WebhookResult> {
+  callbackUrl(url.href, CHATGPT_CALLBACK_ORIGIN);
+  const response = await send(url.href, {
+    method: "POST", body, headers, redirect: "manual",
+    signal: AbortSignal.timeout(10000),
+  });
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel();
+    throw new EventError(-32015, "Callback redirects are not allowed", "invalid_url");
+  }
+  const reader = response.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (reader) {
+    try {
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > 16384) throw new EventError(-32015, "Callback response too large", "challenge_failed");
+        chunks.push(value);
+      }
+    } finally { await reader.cancel(); }
+  }
+  return {status:response.status, body:Buffer.concat(chunks).toString("utf8")};
+}
+export const callbackPost: WebhookPost = async (url, body, headers) => {
+  if (url.origin === CHATGPT_CALLBACK_ORIGIN) {
+    await resolveCallbackAddresses(url.hostname);
+    return chatgptPost(url, body, headers);
+  }
+  return pinnedPost(url, body, headers);
+};
+
 export function parseHttpResponse(raw: Buffer): WebhookResult {
   const split = raw.indexOf("\r\n\r\n");
   if (split < 0) throw new Error("Incomplete headers");
@@ -204,7 +254,7 @@ export async function signedPost(
   eventId: string,
   value: unknown,
   origins: string,
-  post = pinnedPost,
+  post = callbackPost,
   now = Date.now(),
 ): Promise<WebhookResult> {
   const url = callbackUrl(dest.url, origins);
@@ -230,7 +280,7 @@ export async function signedPost(
 export async function verifyCallback(
   dest: Destination,
   origins: string,
-  post = pinnedPost,
+  post = callbackPost,
 ): Promise<void> {
   const challenge = crypto.randomUUID();
   const result = await signedPost(
